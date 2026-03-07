@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
-use reqwest::{Client, header};
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use reqwest::{header, Client};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CalendarEvent {
@@ -32,11 +32,19 @@ impl CalDavClient {
     pub fn new(base_url: String, username: String, password: String) -> Self {
         let client = Client::new();
         let base_url = base_url.trim_end_matches('/').to_string();
-        Self { base_url, username, password, client }
+        Self {
+            base_url,
+            username,
+            password,
+            client,
+        }
     }
 
     fn caldav_url(&self) -> String {
-        format!("{}/remote.php/dav/calendars/{}/", self.base_url, self.username)
+        format!(
+            "{}/remote.php/dav/calendars/{}/",
+            self.base_url, self.username
+        )
     }
 
     pub async fn test_connection(&self) -> Result<(), String> {
@@ -69,7 +77,8 @@ impl CalDavClient {
   </d:prop>
 </d:propfind>"#;
 
-        let resp = self.client
+        let resp = self
+            .client
             .request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
             .basic_auth(&self.username, Some(&self.password))
             .header("Depth", "1")
@@ -79,7 +88,10 @@ impl CalDavClient {
             .await
             .map_err(|e| format!("Request error: {}", e))?;
 
-        let text = resp.text().await.map_err(|e| format!("Read error: {}", e))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("Read error: {}", e))?;
         parse_calendars(&text)
     }
 
@@ -103,7 +115,8 @@ impl CalDavClient {
   </c:filter>
 </c:calendar-query>"#;
 
-        let resp = self.client
+        let resp = self
+            .client
             .request(reqwest::Method::from_bytes(b"REPORT").unwrap(), &url)
             .basic_auth(&self.username, Some(&self.password))
             .header("Depth", "1")
@@ -113,7 +126,10 @@ impl CalDavClient {
             .await
             .map_err(|e| format!("Request error: {}", e))?;
 
-        let text = resp.text().await.map_err(|e| format!("Read error: {}", e))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("Read error: {}", e))?;
         parse_events(&text)
     }
 }
@@ -135,7 +151,12 @@ fn parse_calendars(xml: &str) -> Result<Vec<Calendar>, String> {
             Ok(Event::Start(e)) => {
                 let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
                 match name.as_str() {
-                    "response" => { in_response = true; current_href.clear(); current_name.clear(); current_color = None; }
+                    "response" => {
+                        in_response = true;
+                        current_href.clear();
+                        current_name.clear();
+                        current_color = None;
+                    }
                     "href" if in_response => in_href = true,
                     "displayname" => in_displayname = true,
                     "calendar-color" => in_color = true,
@@ -144,9 +165,18 @@ fn parse_calendars(xml: &str) -> Result<Vec<Calendar>, String> {
             }
             Ok(Event::Text(e)) => {
                 let text = e.unescape().unwrap_or_default().to_string();
-                if in_href { current_href = text.clone(); in_href = false; }
-                if in_displayname { current_name = text.clone(); in_displayname = false; }
-                if in_color { current_color = Some(text); in_color = false; }
+                if in_href {
+                    current_href = text.clone();
+                    in_href = false;
+                }
+                if in_displayname {
+                    current_name = text.clone();
+                    in_displayname = false;
+                }
+                if in_color {
+                    current_color = Some(text);
+                    in_color = false;
+                }
             }
             Ok(Event::End(e)) => {
                 let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
@@ -180,21 +210,26 @@ fn parse_events(xml: &str) -> Result<Vec<CalendarEvent>, String> {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
                 let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                if name == "calendar-data" { in_calendar_data = true; calendar_data.clear(); }
+                if name == "calendar-data" {
+                    in_calendar_data = true;
+                    calendar_data.clear();
+                }
             }
             Ok(Event::Text(e)) => {
-                if in_calendar_data { calendar_data.push_str(&e.unescape().unwrap_or_default()); }
+                if in_calendar_data {
+                    calendar_data.push_str(&e.unescape().unwrap_or_default());
+                }
             }
             Ok(Event::CData(e)) => {
-                if in_calendar_data { calendar_data.push_str(&String::from_utf8_lossy(&e)); }
+                if in_calendar_data {
+                    calendar_data.push_str(&String::from_utf8_lossy(&e));
+                }
             }
             Ok(Event::End(e)) => {
                 let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
                 if name == "calendar-data" && in_calendar_data {
                     in_calendar_data = false;
-                    if let Some(event) = parse_ical_event(&calendar_data) {
-                        events.push(event);
-                    }
+                    events.extend(parse_ical_events(&calendar_data));
                 }
             }
             Ok(Event::Eof) => break,
@@ -205,52 +240,111 @@ fn parse_events(xml: &str) -> Result<Vec<CalendarEvent>, String> {
     Ok(events)
 }
 
-fn parse_ical_event(ical: &str) -> Option<CalendarEvent> {
-    let mut uid = String::new();
-    let mut summary = String::new();
-    let mut dtstart: Option<DateTime<Utc>> = None;
-    let mut dtend: Option<DateTime<Utc>> = None;
-    let mut description = None;
-    let mut location = None;
-    let mut in_vevent = false;
+fn parse_ical_events(ical: &str) -> Vec<CalendarEvent> {
+    #[derive(Default)]
+    struct EventBuilder {
+        uid: String,
+        summary: String,
+        dtstart: Option<DateTime<Utc>>,
+        dtend: Option<DateTime<Utc>>,
+        description: Option<String>,
+        location: Option<String>,
+    }
 
-    for line in ical.lines() {
-        let line = line.trim();
-        if line.starts_with("BEGIN:VEVENT") { in_vevent = true; continue; }
-        if line.starts_with("END:VEVENT") { in_vevent = false; continue; }
-        if !in_vevent { continue; }
+    fn finalize(builder: EventBuilder) -> Option<CalendarEvent> {
+        if builder.uid.is_empty() && builder.summary.is_empty() {
+            return None;
+        }
+
+        Some(CalendarEvent {
+            uid: builder.uid,
+            summary: builder.summary,
+            start: builder.dtstart,
+            end: builder.dtend,
+            description: builder.description,
+            location: builder.location,
+        })
+    }
+
+    let mut events = Vec::new();
+    let mut current: Option<EventBuilder> = None;
+
+    for line in unfold_ical_lines(ical) {
+        if line == "BEGIN:VEVENT" {
+            current = Some(EventBuilder::default());
+            continue;
+        }
+
+        if line == "END:VEVENT" {
+            if let Some(builder) = current.take().and_then(finalize) {
+                events.push(builder);
+            }
+            continue;
+        }
+
+        let Some(event) = current.as_mut() else {
+            continue;
+        };
+
         if let Some(val) = line.strip_prefix("UID:") {
-            uid = val.to_string();
+            event.uid = val.to_string();
         } else if let Some(val) = line.strip_prefix("SUMMARY:") {
-            summary = val.replace("\\n", "\n").replace("\\,", ",");
+            event.summary = unescape_ical_text(val);
         } else if line.starts_with("DTSTART") {
-            dtstart = parse_ical_date(line);
+            event.dtstart = parse_ical_date(&line);
         } else if line.starts_with("DTEND") {
-            dtend = parse_ical_date(line);
+            event.dtend = parse_ical_date(&line);
         } else if let Some(val) = line.strip_prefix("DESCRIPTION:") {
-            description = Some(val.replace("\\n", "\n").replace("\\,", ","));
+            event.description = Some(unescape_ical_text(val));
         } else if let Some(val) = line.strip_prefix("LOCATION:") {
-            location = Some(val.replace("\\n", "\n").replace("\\,", ","));
+            event.location = Some(unescape_ical_text(val));
         }
     }
 
-    if uid.is_empty() && summary.is_empty() { return None; }
-    Some(CalendarEvent { uid, summary, start: dtstart, end: dtend, description, location })
+    events
+}
+
+fn unfold_ical_lines(ical: &str) -> Vec<String> {
+    let mut unfolded: Vec<String> = Vec::new();
+
+    for line in ical.lines() {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if let Some(last) = unfolded.last_mut() {
+                last.push_str(line.trim_start_matches([' ', '\t']));
+            }
+            continue;
+        }
+
+        unfolded.push(line.trim_end_matches('\r').to_string());
+    }
+
+    unfolded
+}
+
+fn unescape_ical_text(text: &str) -> String {
+    text.replace("\\n", "\n")
+        .replace("\\N", "\n")
+        .replace("\\,", ",")
+        .replace("\\;", ";")
+        .replace("\\\\", "\\")
 }
 
 fn parse_ical_date(line: &str) -> Option<DateTime<Utc>> {
     let val = line.split(':').last()?.trim();
     if val.ends_with('Z') && val.len() >= 15 {
         return chrono::NaiveDateTime::parse_from_str(&val[..15], "%Y%m%dT%H%M%S")
-            .ok().map(|ndt| ndt.and_utc());
+            .ok()
+            .map(|ndt| ndt.and_utc());
     }
     if val.len() == 8 {
         return chrono::NaiveDate::parse_from_str(val, "%Y%m%d")
-            .ok().map(|d| d.and_hms_opt(0,0,0).unwrap().and_utc());
+            .ok()
+            .map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc());
     }
     if val.len() >= 15 {
         return chrono::NaiveDateTime::parse_from_str(&val[..15], "%Y%m%dT%H%M%S")
-            .ok().map(|ndt| ndt.and_utc());
+            .ok()
+            .map(|ndt| ndt.and_utc());
     }
     None
 }
@@ -270,9 +364,9 @@ impl CalDavClient {
     ) -> Result<(), String> {
         use chrono::TimeZone;
         let uid = format!("{}", uuid_simple());
-        let start = chrono::Local.from_local_datetime(
-            &date.and_hms_opt(hour, minute, 0).unwrap()
-        ).unwrap();
+        let start = chrono::Local
+            .from_local_datetime(&date.and_hms_opt(hour, minute, 0).unwrap())
+            .unwrap();
         let end = start + chrono::Duration::minutes(duration_mins as i64);
         let fmt = "%Y%m%dT%H%M%S";
         let alarm = if reminder_mins > 0 {
@@ -280,8 +374,16 @@ impl CalDavClient {
         } else {
             String::new()
         };
-        let loc_line = if !location.is_empty() { format!("LOCATION:{}\r\n", location) } else { String::new() };
-        let desc_line = if !description.is_empty() { format!("DESCRIPTION:{}\r\n", description) } else { String::new() };
+        let loc_line = if !location.is_empty() {
+            format!("LOCATION:{}\r\n", location)
+        } else {
+            String::new()
+        };
+        let desc_line = if !description.is_empty() {
+            format!("DESCRIPTION:{}\r\n", description)
+        } else {
+            String::new()
+        };
         let ical = format!(
             "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//cosmic-caldav//EN\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nSUMMARY:{summary}\r\n{loc}{desc}DTSTART:{start}\r\nDTEND:{end}\r\n{alarm}END:VEVENT\r\nEND:VCALENDAR\r\n",
             uid = uid,
@@ -293,7 +395,8 @@ impl CalDavClient {
             alarm = alarm,
         );
         let url = format!("{}{}{}.ics", self.base_url, calendar_href, uid);
-        let resp = self.client
+        let resp = self
+            .client
             .put(&url)
             .basic_auth(&self.username, Some(&self.password))
             .header("Content-Type", "text/calendar; charset=utf-8")
@@ -311,6 +414,37 @@ impl CalDavClient {
 
 fn uuid_simple() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     format!("{:x}-{:x}", t.as_secs(), t.subsec_nanos())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_ical_events;
+
+    #[test]
+    fn parse_ical_events_parses_all_vevents() {
+        let ical = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:first\r\nSUMMARY:First\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:second\r\nSUMMARY:Second\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+        let events = parse_ical_events(ical);
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].uid, "first");
+        assert_eq!(events[1].uid, "second");
+    }
+
+    #[test]
+    fn parse_ical_events_unfolds_folded_lines() {
+        let ical = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u\r\nSUMMARY:Long line\r\nDESCRIPTION:First part\r\n second part\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+        let events = parse_ical_events(ical);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].description.as_deref(),
+            Some("First partsecond part")
+        );
+    }
 }
