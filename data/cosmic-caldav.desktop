@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=CalDAV Calendar
+Comment=Manage your CalDAV calendars
+Type=Application
+Exec=cosmic-caldav
+Icon=office-calendar
+Terminal=false
+Categories=COSMIC;Office;Calendar;
+Keywords=calendar;caldav;nextcloud;google;outlook;
+StartupNotify=true

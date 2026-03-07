@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=CalDAV Calendar
+Type=Application
+Exec=cosmic-applet-caldav
+Terminal=false
+Categories=COSMIC;
+Keywords=COSMIC;Iced;
+Icon=x-office-calendar-symbolic
+StartupNotify=true
+NoDisplay=true
+X-CosmicApplet=true
