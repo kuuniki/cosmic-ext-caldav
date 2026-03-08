@@ -122,7 +122,17 @@ impl Application for CalDavApplet {
             Message::PopupClosed(id) => {
                 if self.popup == Some(id) { self.popup = None; }
             }
-            Message::Tick => { self.now = Local::now(); }
+            Message::Tick => {
+                self.now = Local::now();
+                // Refresh calendars every tick if we have an account
+                if let Some(account) = self.config.accounts.first().cloned() {
+                    let client = CalDavClient::new(account.url, account.username, account.password);
+                    return Task::perform(
+                        async move { client.get_calendars().await },
+                        |r| cosmic::Action::App(Message::CalendarsLoaded(r)),
+                    );
+                }
+            }
             Message::CalendarsLoaded(Ok(cals)) => {
                 self.calendars = cals;
                 if let Some(cal) = self.calendars.first().cloned() {
