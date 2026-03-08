@@ -76,7 +76,7 @@ impl Application for App {
         (app, Task::none())
     }
 
-    fn header_center(&self) -> Vec<Element<Self::Message>> {
+    fn header_center(&self) -> Vec<Element<'_, Self::Message>> {
         let title = match &self.view {
             View::Accounts => "",
             View::AddAccount => "",
@@ -85,7 +85,7 @@ impl Application for App {
         };
         vec![widget::text::body(title).wrapping(cosmic::iced::widget::text::Wrapping::None).into()]
     }
-    fn header_start(&self) -> Vec<Element<Self::Message>> {
+    fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
         // Balance the 3 window control buttons on the right so title is truly centered
         vec![widget::container(widget::text("")).width(Length::Fixed(120.0)).into()]
     }
@@ -235,7 +235,7 @@ impl Application for App {
         Task::none()
     }
 
-    fn view(&self) -> Element<Self::Message> {
+    fn view(&self) -> Element<'_, Self::Message> {
         match &self.view {
             View::Accounts => self.view_accounts(),
             View::AddAccount => self.view_add_account(),
@@ -246,7 +246,7 @@ impl Application for App {
 }
 
 impl App {
-    fn view_accounts(&self) -> Element<Message> {
+    fn view_accounts(&self) -> Element<'_, Message> {
         let mut col = widget::column::with_capacity(10)
             .spacing(12)
             .padding(24);
@@ -309,7 +309,7 @@ impl App {
         .into()
     }
 
-    fn view_add_account(&self) -> Element<Message> {
+    fn view_add_account(&self) -> Element<'_, Message> {
         let mut col = widget::column::with_capacity(12)
             .spacing(12)
             .padding([12, 24, 24, 24])
@@ -407,7 +407,7 @@ impl App {
             .into()
     }
 
-    fn view_calendars(&self, _account_id: &str) -> Element<Message> {
+    fn view_calendars(&self, _account_id: &str) -> Element<'_, Message> {
         let account_id = _account_id.to_string();
         let mut col = widget::column::with_capacity(10)
             .spacing(8)
@@ -444,7 +444,7 @@ impl App {
         widget::scrollable(col).into()
     }
 
-    fn view_events(&self, account_id: &str, _href: &str) -> Element<Message> {
+    fn view_events(&self, account_id: &str, _href: &str) -> Element<'_, Message> {
         let aid = account_id.to_string();
         let mut col = widget::column::with_capacity(10)
             .spacing(8)
@@ -473,7 +473,7 @@ impl App {
         widget::scrollable(col).into()
     }
 
-    fn event_card(&self, event: &CalendarEvent) -> Element<Message> {
+    fn event_card(&self, event: &CalendarEvent) -> Element<'_, Message> {
         let date_str = event.start
             .map(|dt| dt.with_timezone(&Local).format("%a, %d %b %Y  %H:%M").to_string())
             .unwrap_or_else(|| "No date".to_string());

@@ -336,6 +336,7 @@ fn unfold_ical_lines(ical: &str) -> Vec<String> {
     unfolded
 }
 
+#[allow(dead_code)]
 fn escape_ical_text(s: &str) -> String {
     s.replace('\\', "\\\\")
      .replace(';', "\\;")
@@ -466,6 +467,7 @@ impl CalDavClient {
 }
 
 
+#[allow(dead_code)]
 fn uuid_simple() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let t = SystemTime::now()
