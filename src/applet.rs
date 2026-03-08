@@ -54,6 +54,7 @@ pub struct CalDavApplet {
     form_description: String,
     form_reminder: String,
     form_error: Option<String>,
+    last_synced: Option<chrono::DateTime<Local>>,
 }
 
 impl Application for CalDavApplet {
@@ -78,6 +79,7 @@ impl Application for CalDavApplet {
             date_selected: today,
             calendars: Vec::new(),
             events: Vec::new(),
+            last_synced: None,
             config,
             loading: false,
             show_add_form: false,
@@ -91,7 +93,16 @@ impl Application for CalDavApplet {
             form_error: None,
             now,
         };
-        (app, Task::none())
+        let init_task = if let Some(account) = app.config.accounts.first().cloned() {
+            let client = CalDavClient::new(account.url, account.username, account.password);
+            Task::perform(
+                async move { client.get_calendars().await },
+                |r| cosmic::Action::App(Message::CalendarsLoaded(r)),
+            )
+        } else {
+            Task::none()
+        };
+        (app, init_task)
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -102,14 +113,15 @@ impl Application for CalDavApplet {
                 } else {
                     let new_id = window::Id::unique();
                     self.popup = Some(new_id);
-                    self.loading = true;
                     let fetch_task = if let Some(account) = self.config.accounts.first().cloned() {
+                        self.loading = true;
                         let client = CalDavClient::new(account.url, account.username, account.password);
                         Task::perform(
                             async move { client.get_calendars().await },
                             |r| cosmic::Action::App(Message::CalendarsLoaded(r)),
                         )
                     } else {
+                        self.loading = false;
                         Task::none()
                     };
                     let main_id = self.core.main_window_id().unwrap_or(window::Id::unique());
@@ -124,16 +136,23 @@ impl Application for CalDavApplet {
             }
             Message::Tick => {
                 self.now = Local::now();
-                // Refresh calendars every tick if we have an account
-                if let Some(account) = self.config.accounts.first().cloned() {
-                    let client = CalDavClient::new(account.url, account.username, account.password);
-                    return Task::perform(
-                        async move { client.get_calendars().await },
-                        |r| cosmic::Action::App(Message::CalendarsLoaded(r)),
-                    );
+                // Only sync in background if popup closed and last sync > 5 min ago
+                let should_sync = self.popup.is_none() && match self.last_synced {
+                    None => true,
+                    Some(t) => (Local::now() - t).num_seconds() > 300,
+                };
+                if should_sync {
+                    if let Some(account) = self.config.accounts.first().cloned() {
+                        let client = CalDavClient::new(account.url, account.username, account.password);
+                        return Task::perform(
+                            async move { client.get_calendars().await },
+                            |r| cosmic::Action::App(Message::CalendarsLoaded(r)),
+                        );
+                    }
                 }
             }
             Message::CalendarsLoaded(Ok(cals)) => {
+                self.last_synced = Some(Local::now());
                 self.calendars = cals;
                 if let Some(cal) = self.calendars.first().cloned() {
                     if let Some(account) = self.config.accounts.first().cloned() {
@@ -276,7 +295,7 @@ impl Application for CalDavApplet {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        cosmic::iced::time::every(Duration::from_secs(60))
+        cosmic::iced::time::every(Duration::from_secs(300))
             .map(|_| Message::Tick)
     }
 

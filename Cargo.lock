@@ -884,7 +884,6 @@ dependencies = [
  "dirs 5.0.1",
  "keyring",
  "libcosmic",
- "once_cell",
  "quick-xml 0.36.2",
  "reqwest",
  "serde",

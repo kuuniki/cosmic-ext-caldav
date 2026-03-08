@@ -30,7 +30,10 @@ pub struct CalDavClient {
 
 impl CalDavClient {
     pub fn new(base_url: String, username: String, password: String) -> Self {
-        let client = Client::new();
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_default();
         let base_url = base_url.trim_end_matches('/').to_string();
         Self {
             base_url,

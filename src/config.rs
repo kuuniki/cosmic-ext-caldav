@@ -35,7 +35,7 @@ struct StoredConfig {
 #[allow(dead_code)]
 impl Config {
     fn path() -> PathBuf {
-        let mut p = dirs::config_dir().unwrap_or_else(|| PathBuf::from("~/.config"));
+        let mut p = dirs::config_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp")).join(".config"));
         p.push("cosmic-caldav");
         p.push("config.json");
         p
@@ -56,7 +56,10 @@ impl Config {
             let password = keyring::Entry::new(KEYRING_SERVICE, &meta.id)
                 .ok()
                 .and_then(|e| e.get_password().ok())
-                .unwrap_or_default();
+                .unwrap_or_else(|| {
+                    eprintln!("Warning: could not retrieve password for account {} from keyring", meta.id);
+                    String::new()
+                });
             Account {
                 id: meta.id,
                 display_name: meta.display_name,
@@ -94,8 +97,10 @@ impl Config {
             " (Google)"
         } else if url.contains("outlook.office365.com") {
             " (Outlook)"
-        } else {
+        } else if url.contains("nextcloud") || url.contains("remote.php") {
             " (Nextcloud)"
+        } else {
+            " (CalDAV)"
         };
         let display_name = format!("{}{}", short_name, provider_label);
 
