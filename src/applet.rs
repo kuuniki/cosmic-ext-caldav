@@ -17,6 +17,7 @@ pub enum Message {
     TogglePopup,
     PopupClosed(window::Id),
     Tick,
+    SyncTick,
     CalendarsLoaded(Result<Vec<Calendar>, String>),
     EventsLoaded(Result<Vec<CalendarEvent>, String>),
     PrevMonth,
@@ -136,12 +137,9 @@ impl Application for CalDavApplet {
             }
             Message::Tick => {
                 self.now = Local::now();
-                // Only sync in background if popup closed and last sync > 5 min ago
-                let should_sync = self.popup.is_none() && match self.last_synced {
-                    None => true,
-                    Some(t) => (Local::now() - t).num_seconds() > 300,
-                };
-                if should_sync {
+            }
+            Message::SyncTick => {
+                if self.popup.is_none() {
                     if let Some(account) = self.config.accounts.first().cloned() {
                         let client = CalDavClient::new(account.url, account.username, account.password);
                         return Task::perform(
@@ -295,8 +293,12 @@ impl Application for CalDavApplet {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        cosmic::iced::time::every(Duration::from_secs(300))
-            .map(|_| Message::Tick)
+        Subscription::batch(vec![
+            cosmic::iced::time::every(Duration::from_secs(1))
+                .map(|_| Message::Tick),
+            cosmic::iced::time::every(Duration::from_secs(300))
+                .map(|_| Message::SyncTick),
+        ])
     }
 
     fn on_close_requested(&self, id: window::Id) -> Option<Message> {
