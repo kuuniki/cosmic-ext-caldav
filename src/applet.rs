@@ -223,7 +223,7 @@ impl Application for CalDavApplet {
         Task::none()
     }
 
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<'_, Message> {
         use std::sync::LazyLock;
         static AUTOSIZE_ID: LazyLock<Id> = LazyLock::new(|| Id::new("caldav-autosize"));
         let date_str = self.now.format("%a, %-d %b  %H:%M").to_string();
@@ -234,7 +234,7 @@ impl Application for CalDavApplet {
         autosize::autosize(btn, AUTOSIZE_ID.clone()).into()
     }
 
-    fn view_window(&self, _id: window::Id) -> Element<Message> {
+    fn view_window(&self, _id: window::Id) -> Element<'_, Message> {
         let today = NaiveDate::from_ymd_opt(self.now.year(), self.now.month(), self.now.day())
             .unwrap_or_default();
 
@@ -337,7 +337,7 @@ impl CalDavApplet {
         calendar
     }
 
-    fn events_list(&self) -> Element<Message> {
+    fn events_list(&self) -> Element<'_, Message> {
         let day_events: Vec<&CalendarEvent> = self.events.iter().filter(|e| {
             e.start.map(|dt| {
                 let local = dt.with_timezone(&Local);
@@ -383,7 +383,7 @@ impl CalDavApplet {
         })
     }
 
-    fn add_event_section(&self) -> Element<Message> {
+    fn add_event_section(&self) -> Element<'_, Message> {
         let date_label = self.date_selected.format("%-d %b %Y").to_string();
         if !self.show_add_form {
             return widget::column::with_capacity(0).into();

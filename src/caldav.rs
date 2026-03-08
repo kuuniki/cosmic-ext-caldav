@@ -57,6 +57,7 @@ impl CalDavClient {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn test_connection(&self) -> Result<(), String> {
         let url = self.caldav_url();
         let resp = self.client
@@ -397,6 +398,7 @@ fn parse_ical_date(line: &str) -> Option<DateTime<Utc>> {
 }
 
 impl CalDavClient {
+    #[allow(dead_code)]
     pub async fn create_event(
         &self,
         calendar_href: &str,

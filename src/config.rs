@@ -32,6 +32,7 @@ struct StoredConfig {
     pub accounts: Vec<AccountMeta>,
 }
 
+#[allow(dead_code)]
 impl Config {
     fn path() -> PathBuf {
         let mut p = dirs::config_dir().unwrap_or_else(|| PathBuf::from("~/.config"));

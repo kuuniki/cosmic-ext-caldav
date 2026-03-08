@@ -22,8 +22,8 @@ pub enum Message {
     DeleteAccount(String),
     ConnectionResult(Result<(), String>),
     TestResult(Result<(), String>),
-    CalendarsLoaded(String, Result<Vec<Calendar>, String>),
-    EventsLoaded(String, String, Result<Vec<CalendarEvent>, String>),
+    CalendarsLoaded((), Result<Vec<Calendar>, String>),
+    EventsLoaded((), (), Result<Vec<CalendarEvent>, String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,10 +110,10 @@ impl Application for App {
                 self.status_message = None;
                 if let Some(account) = self.config.accounts.iter().find(|a| a.id == account_id).cloned() {
                     let client = CalDavClient::new(account.url, account.username, account.password);
-                    let id = account_id.clone();
+                    let _id = account_id.clone();
                     return Task::perform(
                         async move { client.get_calendars().await },
-                        move |result| cosmic::Action::App(Message::CalendarsLoaded(id.clone(), result)),
+                        move |result| cosmic::Action::App(Message::CalendarsLoaded((), result)),
                     );
                 }
             }
@@ -128,12 +128,10 @@ impl Application for App {
                 self.status_message = None;
                 if let Some(account) = self.config.accounts.iter().find(|a| a.id == account_id).cloned() {
                     let client = CalDavClient::new(account.url, account.username, account.password);
-                    let aid = account_id.clone();
                     let h = href.clone();
-                    let h2 = h.clone();
                     return Task::perform(
                         async move { client.get_events(&h).await },
-                        move |result| cosmic::Action::App(Message::EventsLoaded(aid.clone(), h2.clone(), result)),
+                        move |result| cosmic::Action::App(Message::EventsLoaded((), (), result)),
                     );
                 }
             }
@@ -445,14 +443,14 @@ impl App {
     }
 
     fn view_events(&self, account_id: &str, _href: &str) -> Element<'_, Message> {
-        let aid = account_id.to_string();
+
         let mut col = widget::column::with_capacity(10)
             .spacing(8)
             .padding(24);
 
         col = col.push(
             widget::button::standard("← Back")
-                .on_press(Message::ViewCalendars(aid)),
+                .on_press(Message::ViewCalendars(account_id.to_string())),
         );
         col = col.push(widget::text::title3(&self.current_calendar_name));
 
