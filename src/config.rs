@@ -105,8 +105,12 @@ impl Config {
         let display_name = format!("{}{}", short_name, provider_label);
 
         // Store password in keyring
-        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &id) {
-            let _ = entry.set_password(&password);
+        match keyring::Entry::new(KEYRING_SERVICE, &id) {
+            Ok(entry) => match entry.set_password(&password) {
+                Ok(_) => eprintln!("Keyring: password saved for {}", id),
+                Err(e) => eprintln!("Keyring: FAILED to save password for {}: {:?}", id, e),
+            },
+            Err(e) => eprintln!("Keyring: FAILED to create entry for {}: {:?}", id, e),
         }
 
         self.accounts.retain(|a| a.id != id);
