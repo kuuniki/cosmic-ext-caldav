@@ -18,14 +18,27 @@ pub struct AccountMeta {
     pub username: String,
 }
 
-// In-memory account with password loaded from keyring
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// In-memory account with password loaded from keyring.
+// Debug is implemented manually to redact the password field.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Account {
     pub id: String,
     pub display_name: String,
     pub url: String,
     pub username: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for Account {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Account")
+            .field("id", &self.id)
+            .field("display_name", &self.display_name)
+            .field("url", &self.url)
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -131,8 +144,6 @@ impl Config {
     pub fn remove_account(&mut self, id: &str) {
         // Delete password from keyring
         if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, id) {
-            // Zero the stored credential before deleting to reduce window
-            // where another process could read it from the keyring backend.
             let _ = entry.delete_credential();
         }
         // Zero in-memory password for the removed account before dropping

@@ -177,6 +177,10 @@ impl Application for CalDavApplet {
                         );
                     }
                 }
+                // No calendars returned (or no account) — release the lock so
+                // future SyncTick cycles are not permanently blocked.
+                self.loading = false;
+                self.syncing = false;
             }
             Message::CalendarsLoaded(Err(e)) => {
                 eprintln!("CalendarsLoaded error: {}", e);

@@ -32,11 +32,11 @@ pub struct Calendar {
     pub color: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CalDavClient {
-    pub base_url: String,
-    pub username: String,
-    pub password: String,
+    base_url: String,
+    username: String,
+    password: String,
     client: Client,
 }
 
