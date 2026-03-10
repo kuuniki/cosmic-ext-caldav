@@ -46,6 +46,10 @@ pub struct CalDavApplet {
     events: Vec<CalendarEvent>,
     config: Config,
     loading: bool,
+    /// True while a calendar/event fetch is in flight.
+    /// SyncTick is ignored when this is true to prevent concurrent requests
+    /// from stacking up and overwriting state with stale data.
+    syncing: bool,
     show_add_form: bool,
     form_title: String,
     form_hour: String,
@@ -72,6 +76,11 @@ impl Application for CalDavApplet {
         let today = NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())
             .unwrap_or_default();
         let config = Config::load();
+        // Extract the first account before moving `config` into the struct so we
+        // can correctly initialise `syncing` and build the init task without a
+        // borrow-after-move issue.
+        let first_account = config.accounts.first().cloned();
+        let has_accounts = first_account.is_some();
         let app = Self {
             core,
             popup: None,
@@ -83,6 +92,7 @@ impl Application for CalDavApplet {
             last_synced: None,
             config,
             loading: false,
+            syncing: has_accounts,
             show_add_form: false,
             form_title: String::new(),
             form_hour: String::new(),
@@ -94,7 +104,7 @@ impl Application for CalDavApplet {
             form_error: None,
             now,
         };
-        let init_task = if let Some(account) = app.config.accounts.first().cloned() {
+        let init_task = if let Some(account) = first_account {
             let client = CalDavClient::new(account.url, account.username, account.password);
             Task::perform(
                 async move { client.get_calendars().await },
@@ -116,6 +126,7 @@ impl Application for CalDavApplet {
                     self.popup = Some(new_id);
                     let fetch_task = if let Some(account) = self.config.accounts.first().cloned() {
                         self.loading = true;
+                        self.syncing = true;
                         let client = CalDavClient::new(account.url, account.username, account.password);
                         Task::perform(
                             async move { client.get_calendars().await },
@@ -123,6 +134,7 @@ impl Application for CalDavApplet {
                         )
                     } else {
                         self.loading = false;
+                        self.syncing = false;
                         Task::none()
                     };
                     let main_id = self.core.main_window_id().unwrap_or(window::Id::unique());
@@ -139,8 +151,11 @@ impl Application for CalDavApplet {
                 self.now = Local::now();
             }
             Message::SyncTick => {
-                if self.popup.is_none() {
+                // Skip if a sync is already in-flight — prevents concurrent requests
+                // from stacking up when the server is slow (< 300 s response time).
+                if self.popup.is_none() && !self.syncing {
                     if let Some(account) = self.config.accounts.first().cloned() {
+                        self.syncing = true;
                         let client = CalDavClient::new(account.url, account.username, account.password);
                         return Task::perform(
                             async move { client.get_calendars().await },
@@ -163,9 +178,21 @@ impl Application for CalDavApplet {
                     }
                 }
             }
-            Message::CalendarsLoaded(Err(_)) => { self.loading = false; }
-            Message::EventsLoaded(Ok(events)) => { self.loading = false; self.events = events; }
-            Message::EventsLoaded(Err(_)) => { self.loading = false; }
+            Message::CalendarsLoaded(Err(e)) => {
+                eprintln!("CalendarsLoaded error: {}", e);
+                self.loading = false;
+                self.syncing = false;
+            }
+            Message::EventsLoaded(Ok(events)) => {
+                self.loading = false;
+                self.syncing = false;
+                self.events = events;
+            }
+            Message::EventsLoaded(Err(e)) => {
+                eprintln!("EventsLoaded error: {}", e);
+                self.loading = false;
+                self.syncing = false;
+            }
             Message::PrevMonth => {
                 if self.view_month == 1 { self.view_month = 12; self.view_year -= 1; }
                 else { self.view_month -= 1; }
@@ -188,9 +215,11 @@ impl Application for CalDavApplet {
             Message::FormDescriptionChanged(s) => { self.form_description = s; }
             Message::FormReminderChanged(s) => { self.form_reminder = s; }
             Message::SubmitEvent => {
-                let hour = self.form_hour.parse::<u32>().unwrap_or(9);
-                let minute = self.form_minute.parse::<u32>().unwrap_or(0);
-                let duration = self.form_duration.parse::<u32>().unwrap_or(60);
+                // Clamp to valid ranges before passing to chrono / iCalendar
+                let hour = self.form_hour.parse::<u32>().unwrap_or(9).min(23);
+                let minute = self.form_minute.parse::<u32>().unwrap_or(0).min(59);
+                // Cap duration at 24 hours (1 440 minutes) to avoid malformed DTEND
+                let duration = self.form_duration.parse::<u32>().unwrap_or(60).min(1440);
                 if self.form_title.trim().is_empty() {
                     self.form_error = Some("Title required".into());
                 } else if let Some(account) = self.config.accounts.first().cloned() {

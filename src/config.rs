@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 const KEYRING_SERVICE: &str = "cosmic-caldav";
 
@@ -52,20 +53,27 @@ impl Config {
             StoredConfig::default()
         };
 
-        let accounts = stored.accounts.into_iter().map(|meta| {
-            let password = keyring::Entry::new(KEYRING_SERVICE, &meta.id)
-                .ok()
-                .and_then(|e| e.get_password().ok())
-                .unwrap_or_else(|| {
-                    eprintln!("Warning: could not retrieve password for account {} from keyring", meta.id);
-                    String::new()
-                });
-            Account {
-                id: meta.id,
-                display_name: meta.display_name,
-                url: meta.url,
-                username: meta.username,
-                password,
+        // Accounts whose password cannot be retrieved from the keyring are skipped.
+        // This prevents silent authentication failures later and avoids an empty
+        // password being passed to the CalDAV server.
+        let accounts = stored.accounts.into_iter().filter_map(|meta| {
+            match keyring::Entry::new(KEYRING_SERVICE, &meta.id)
+                .and_then(|e| e.get_password())
+            {
+                Ok(password) => Some(Account {
+                    id: meta.id,
+                    display_name: meta.display_name,
+                    url: meta.url,
+                    username: meta.username,
+                    password,
+                }),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: skipping account '{}' — could not retrieve password from keyring: {:?}",
+                        meta.display_name, e
+                    );
+                    None
+                }
             }
         }).collect();
 
@@ -90,7 +98,11 @@ impl Config {
         }
     }
 
-    pub fn add_account(&mut self, url: String, username: String, password: String) {
+    /// Adds a new account, storing its password securely in the OS keyring.
+    ///
+    /// Returns `Err` if the keyring operation fails — the account is **not** added
+    /// in that case, preventing silent use of an unsecured credential store.
+    pub fn add_account(&mut self, url: String, username: String, password: String) -> Result<(), String> {
         let id = format!("{}-{}", username, url.replace("://", "_").replace('/', "_"));
         let short_name = username.split('@').next().unwrap_or(&username).to_string();
         let provider_label = if url.contains("google.com") {
@@ -104,24 +116,28 @@ impl Config {
         };
         let display_name = format!("{}{}", short_name, provider_label);
 
-        // Store password in keyring
-        match keyring::Entry::new(KEYRING_SERVICE, &id) {
-            Ok(entry) => match entry.set_password(&password) {
-                Ok(_) => eprintln!("Keyring: password saved for {}", id),
-                Err(e) => eprintln!("Keyring: FAILED to save password for {}: {:?}", id, e),
-            },
-            Err(e) => eprintln!("Keyring: FAILED to create entry for {}: {:?}", id, e),
-        }
+        // Store password in keyring — fail loudly if this is not possible.
+        keyring::Entry::new(KEYRING_SERVICE, &id)
+            .map_err(|e| format!("Could not access the system keyring: {:?}", e))?
+            .set_password(&password)
+            .map_err(|e| format!("Could not save your password securely: {:?}", e))?;
 
         self.accounts.retain(|a| a.id != id);
         self.accounts.push(Account { id, display_name, url, username, password });
         self.save();
+        Ok(())
     }
 
     pub fn remove_account(&mut self, id: &str) {
         // Delete password from keyring
         if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, id) {
+            // Zero the stored credential before deleting to reduce window
+            // where another process could read it from the keyring backend.
             let _ = entry.delete_credential();
+        }
+        // Zero in-memory password for the removed account before dropping
+        if let Some(account) = self.accounts.iter_mut().find(|a| a.id == id) {
+            account.password.zeroize();
         }
         self.accounts.retain(|a| a.id != id);
         self.save();

@@ -2,6 +2,18 @@ use chrono::{DateTime, Utc};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use reqwest::{header, Client};
+use std::sync::LazyLock;
+use uuid::Uuid;
+
+// Static HTTP method constants — defined once, cloned at each call site.
+// `from_bytes` is infallible for these well-known ASCII strings; the
+// `expect` message is intentionally descriptive for any future mis-edit.
+static PROPFIND: LazyLock<reqwest::Method> = LazyLock::new(|| {
+    reqwest::Method::from_bytes(b"PROPFIND").expect("PROPFIND is a valid HTTP method")
+});
+static REPORT: LazyLock<reqwest::Method> = LazyLock::new(|| {
+    reqwest::Method::from_bytes(b"REPORT").expect("REPORT is a valid HTTP method")
+});
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CalendarEvent {
@@ -62,25 +74,32 @@ impl CalDavClient {
 
     #[allow(dead_code)]
     pub async fn test_connection(&self) -> Result<(), String> {
+        enforce_https(&self.base_url)?;
         let url = self.caldav_url();
         let resp = self.client
-            .request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
+            .request(PROPFIND.clone(), &url)
             .basic_auth(&self.username, Some(&self.password))
             .header("Depth", "0")
             .header(header::CONTENT_TYPE, "application/xml")
             .body(r#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname/></d:prop></d:propfind>"#)
             .send()
             .await
-            .map_err(|e| format!("Connection error: {}", e))?;
+            .map_err(|e| {
+                eprintln!("CalDAV test_connection error: {}", e);
+                "Could not reach the server. Check the URL and your network connection.".to_string()
+            })?;
 
         if resp.status().is_success() || resp.status().as_u16() == 207 {
             Ok(())
+        } else if resp.status().as_u16() == 401 {
+            Err("Authentication failed. Check your username and password.".to_string())
         } else {
-            Err(format!("Auth failed: HTTP {}", resp.status()))
+            Err(format!("Server returned HTTP {}", resp.status().as_u16()))
         }
     }
 
     pub async fn get_calendars(&self) -> Result<Vec<Calendar>, String> {
+        enforce_https(&self.base_url)?;
         let url = self.caldav_url();
         let body = r#"<?xml version="1.0"?>
 <d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:a="http://apple.com/ns/ical/">
@@ -93,31 +112,35 @@ impl CalDavClient {
 
         let resp = self
             .client
-            .request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
+            .request(PROPFIND.clone(), &url)
             .basic_auth(&self.username, Some(&self.password))
             .header("Depth", "1")
             .header(header::CONTENT_TYPE, "application/xml")
             .body(body)
             .send()
             .await
-            .map_err(|e| format!("Request error: {}", e))?;
+            .map_err(|e| {
+                eprintln!("CalDAV get_calendars error: {}", e);
+                "Could not fetch calendars. Check your network connection.".to_string()
+            })?;
 
         let text = resp
             .text()
             .await
-            .map_err(|e| format!("Read error: {}", e))?;
+            .map_err(|e| {
+                eprintln!("CalDAV get_calendars read error: {}", e);
+                "Failed to read server response.".to_string()
+            })?;
         parse_calendars(&text)
     }
 
     pub async fn get_events(&self, calendar_href: &str) -> Result<Vec<CalendarEvent>, String> {
-        let url = if calendar_href.starts_with("http") {
-            calendar_href.to_string()
-        } else {
-            format!("{}{}", self.base_url, calendar_href)
-        };
+        enforce_https(&self.base_url)?;
+        let url = validate_server_href(calendar_href, &self.base_url)?;
 
         let now = chrono::Utc::now();
-        let start = (now - chrono::Duration::days(60)).format("%Y%m%dT000000Z");
+        // Fetch 7 days of past events and 60 days ahead — limits bandwidth for history
+        let start = (now - chrono::Duration::days(7)).format("%Y%m%dT000000Z");
         let end = (now + chrono::Duration::days(60)).format("%Y%m%dT235959Z");
         let body = format!(r#"<?xml version="1.0"?>
 <c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
@@ -136,19 +159,25 @@ impl CalDavClient {
 
         let resp = self
             .client
-            .request(reqwest::Method::from_bytes(b"REPORT").unwrap(), &url)
+            .request(REPORT.clone(), &url)
             .basic_auth(&self.username, Some(&self.password))
             .header("Depth", "1")
             .header(header::CONTENT_TYPE, "application/xml")
             .body(body)
             .send()
             .await
-            .map_err(|e| format!("Request error: {}", e))?;
+            .map_err(|e| {
+                eprintln!("CalDAV get_events error: {}", e);
+                "Could not fetch events. Check your network connection.".to_string()
+            })?;
 
         let text = resp
             .text()
             .await
-            .map_err(|e| format!("Read error: {}", e))?;
+            .map_err(|e| {
+                eprintln!("CalDAV get_events read error: {}", e);
+                "Failed to read server response.".to_string()
+            })?;
         parse_events(&text)
     }
 }
@@ -414,8 +443,9 @@ impl CalDavClient {
         description: &str,
         reminder_mins: i32,
     ) -> Result<(), String> {
+        enforce_https(&self.base_url)?;
         use chrono::TimeZone;
-        let uid = format!("{}", uuid_simple());
+        let uid = generate_uid();
         let naive = date.and_hms_opt(hour, minute, 0)
             .ok_or_else(|| "Invalid time values".to_string())?;
         let start = chrono::Local
@@ -449,11 +479,9 @@ impl CalDavClient {
             end = end.format(fmt),
             alarm = alarm,
         );
-        let url = if calendar_href.starts_with("http") {
-            format!("{}/{}.ics", calendar_href.trim_end_matches('/'), uid)
-        } else {
-            format!("{}/{}/{}.ics", self.base_url.trim_end_matches('/'), calendar_href.trim_matches('/'), uid)
-        };
+        // Validate the server-provided href before constructing the PUT URL
+        let base_href = validate_server_href(calendar_href, &self.base_url)?;
+        let url = format!("{}/{}.ics", base_href.trim_end_matches('/'), uid);
         let resp = self
             .client
             .put(&url)
@@ -462,23 +490,75 @@ impl CalDavClient {
             .body(ical)
             .send()
             .await
-            .map_err(|e| format!("Request error: {e}"))?;
+            .map_err(|e| {
+                eprintln!("CalDAV create_event error: {}", e);
+                "Could not create event. Check your network connection.".to_string()
+            })?;
         if resp.status().is_success() || resp.status().as_u16() == 201 {
             Ok(())
         } else {
-            Err(format!("Server error: HTTP {}", resp.status()))
+            Err(format!("Server error: HTTP {}", resp.status().as_u16()))
         }
     }
 }
 
+/// Generates a cryptographically random UUID v4 for use as a CalDAV event UID.
+fn generate_uid() -> String {
+    Uuid::new_v4().simple().to_string()
+}
 
-#[allow(dead_code)]
-fn uuid_simple() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{:x}-{:x}", t.as_secs(), t.subsec_nanos())
+/// Enforces that the configured CalDAV server URL uses HTTPS.
+/// `http://localhost` and loopback addresses are permitted for local development.
+fn enforce_https(url: &str) -> Result<(), String> {
+    if url.starts_with("https://")
+        || url.starts_with("http://localhost")
+        || url.starts_with("http://127.0.0.1")
+        || url.starts_with("http://[::1]")
+    {
+        Ok(())
+    } else {
+        Err(
+            "CalDAV URL must use HTTPS to protect your credentials. \
+             Please change http:// to https://"
+                .to_string(),
+        )
+    }
+}
+
+/// Validates a href returned by the CalDAV server before using it in a request.
+///
+/// Absolute hrefs must use http/https and must point to the same host as the
+/// configured base URL — this prevents a malicious server from redirecting
+/// requests to an attacker-controlled host.  Relative hrefs are combined with
+/// `base_url` without further restriction (the server already controls the path).
+fn validate_server_href(href: &str, base_url: &str) -> Result<String, String> {
+    if href.starts_with("http://") || href.starts_with("https://") {
+        let parsed = reqwest::Url::parse(href)
+            .map_err(|_| "Server returned an invalid URL".to_string())?;
+        let scheme = parsed.scheme();
+        if scheme != "http" && scheme != "https" {
+            return Err(format!(
+                "Server returned a URL with an unsafe scheme '{}'",
+                scheme
+            ));
+        }
+        let base = reqwest::Url::parse(base_url)
+            .map_err(|_| "The configured server URL is invalid".to_string())?;
+        if parsed.host() != base.host() {
+            return Err(
+                "Server href points to a different host than configured — request blocked"
+                    .to_string(),
+            );
+        }
+        Ok(href.to_string())
+    } else {
+        // Relative path — combine with base_url
+        Ok(format!(
+            "{}{}",
+            base_url.trim_end_matches('/'),
+            href
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -506,6 +586,59 @@ mod tests {
         assert_eq!(
             events[0].description.as_deref(),
             Some("First partsecond part")
+        );
+    }
+
+    #[test]
+    fn enforce_https_accepts_https() {
+        use super::enforce_https;
+        assert!(enforce_https("https://nextcloud.example.com").is_ok());
+        assert!(enforce_https("https://www.google.com/calendar/dav/user/events/").is_ok());
+    }
+
+    #[test]
+    fn enforce_https_allows_localhost_http() {
+        use super::enforce_https;
+        assert!(enforce_https("http://localhost:8080").is_ok());
+        assert!(enforce_https("http://127.0.0.1:5232").is_ok());
+    }
+
+    #[test]
+    fn enforce_https_rejects_plain_http() {
+        use super::enforce_https;
+        assert!(enforce_https("http://nextcloud.example.com").is_err());
+    }
+
+    #[test]
+    fn validate_server_href_rejects_different_host() {
+        use super::validate_server_href;
+        let result = validate_server_href(
+            "https://evil.example.com/calendars/user/",
+            "https://safe.example.com",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_server_href_accepts_same_host() {
+        use super::validate_server_href;
+        let result = validate_server_href(
+            "https://safe.example.com/remote.php/dav/calendars/user/cal/",
+            "https://safe.example.com",
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_server_href_combines_relative() {
+        use super::validate_server_href;
+        let result = validate_server_href(
+            "/remote.php/dav/calendars/user/personal/",
+            "https://safe.example.com",
+        );
+        assert_eq!(
+            result.unwrap(),
+            "https://safe.example.com/remote.php/dav/calendars/user/personal/"
         );
     }
 }

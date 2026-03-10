@@ -3,6 +3,7 @@ use cosmic::iced::{Alignment, Length};
 use cosmic::widget;
 use cosmic::{Application, Element};
 use chrono::Local;
+use zeroize::Zeroize;
 
 use crate::caldav::{CalDavClient, Calendar, CalendarEvent};
 use crate::config::{Account, Config};
@@ -101,6 +102,8 @@ impl Application for App {
                 self.provider = None;
                 self.url_input.clear();
                 self.username_input.clear();
+                // Zero memory before clearing so the password isn't left in the heap
+                self.password_input.zeroize();
                 self.password_input.clear();
                 self.status_message = None;
             }
@@ -110,7 +113,6 @@ impl Application for App {
                 self.status_message = None;
                 if let Some(account) = self.config.accounts.iter().find(|a| a.id == account_id).cloned() {
                     let client = CalDavClient::new(account.url, account.username, account.password);
-                    let _id = account_id.clone();
                     return Task::perform(
                         async move { client.get_calendars().await },
                         move |result| cosmic::Action::App(Message::CalendarsLoaded((), result)),
@@ -187,7 +189,11 @@ impl Application for App {
                 self.is_loading = false;
                 match result {
                     Ok(()) => self.status_message = Some("✓ Connection successful!".into()),
-                    Err(e) => self.status_message = Some(format!("✗ {}", e)),
+                    Err(e) => {
+                        // Log the full technical detail; show a safe summary to the user
+                        eprintln!("Connection test error: {}", e);
+                        self.status_message = Some(format!("✗ {}", e));
+                    }
                 }
             }
             Message::ConnectionResult(result) => {
@@ -195,18 +201,30 @@ impl Application for App {
                 match result {
                     Ok(()) => {
                         if self.view == View::AddAccount {
-                            self.config.add_account(
+                            match self.config.add_account(
                                 self.url_input.clone(),
                                 self.username_input.clone(),
                                 self.password_input.clone(),
-                            );
-                            self.view = View::Accounts;
-                            self.status_message = None;
+                            ) {
+                                Ok(()) => {
+                                    // Zero the password from UI memory now that it is stored
+                                    self.password_input.zeroize();
+                                    self.password_input.clear();
+                                    self.view = View::Accounts;
+                                    self.status_message = None;
+                                }
+                                Err(e) => {
+                                    self.status_message = Some(format!("✗ {}", e));
+                                }
+                            }
                         } else {
                             self.status_message = Some("✓ Connection successful!".into());
                         }
                     }
-                    Err(e) => self.status_message = Some(format!("✗ {}", e)),
+                    Err(e) => {
+                        eprintln!("Connection error: {}", e);
+                        self.status_message = Some(format!("✗ {}", e));
+                    }
                 }
             }
             Message::DeleteAccount(id) => {
@@ -483,8 +501,13 @@ impl App {
         let desc_str = event.description.as_deref()
             .filter(|s| !s.is_empty())
             .map(|s| {
-                let preview: String = s.chars().take(100).collect();
-                if s.len() > 100 { format!("{}…", preview) } else { preview }
+                // Slice at a char boundary to avoid an extra heap allocation per render
+                let cut = s.char_indices().nth(100).map(|(i, _)| i).unwrap_or(s.len());
+                if cut < s.len() {
+                    format!("{}…", &s[..cut])
+                } else {
+                    s.to_owned()
+                }
             });
 
         let mut col = widget::column::with_capacity(4).spacing(4);
