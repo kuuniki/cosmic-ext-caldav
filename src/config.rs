@@ -4,7 +4,10 @@ use zeroize::Zeroize;
 
 const KEYRING_SERVICE: &str = "cosmic-caldav";
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+// Config is never directly serialised — disk persistence uses StoredConfig/AccountMeta
+// which contains no passwords.  Deriving Serialize/Deserialize here would create a
+// latent path to accidentally dump plaintext passwords into JSON.
+#[derive(Debug, Clone, Default)]
 pub struct Config {
     pub accounts: Vec<Account>,
 }
@@ -106,8 +109,13 @@ impl Config {
                 username: a.username.clone(),
             }).collect(),
         };
-        if let Ok(json) = serde_json::to_string_pretty(&stored) {
-            let _ = std::fs::write(path, json);
+        match serde_json::to_string_pretty(&stored) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    eprintln!("Warning: failed to save config to {}: {}", path.display(), e);
+                }
+            }
+            Err(e) => eprintln!("Warning: failed to serialise config: {}", e),
         }
     }
 

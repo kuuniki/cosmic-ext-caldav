@@ -228,15 +228,23 @@ fn parse_calendars(xml: &str) -> Result<Vec<Calendar>, String> {
             }
             Ok(Event::End(e)) => {
                 let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                if name == "response" && in_response {
-                    if current_href.ends_with('/') && !current_name.is_empty() {
-                        calendars.push(Calendar {
-                            href: current_href.clone(),
-                            display_name: current_name.clone(),
-                            color: current_color.clone(),
-                        });
+                match name.as_str() {
+                    "response" if in_response => {
+                        if current_href.ends_with('/') && !current_name.is_empty() {
+                            calendars.push(Calendar {
+                                href: current_href.clone(),
+                                display_name: current_name.clone(),
+                                color: current_color.clone(),
+                            });
+                        }
+                        in_response = false;
                     }
-                    in_response = false;
+                    // Reset flags on End so an empty element (e.g. <displayname/>)
+                    // does not bleed its flag into the next sibling's text content.
+                    "href" => in_href = false,
+                    "displayname" => in_displayname = false,
+                    "calendar-color" => in_color = false,
+                    _ => {}
                 }
             }
             Ok(Event::Eof) => break,

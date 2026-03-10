@@ -364,12 +364,9 @@ impl App {
             "outlook" => "https://outlook.office365.com/",
             _ => "https://cloud.example.com",
         };
-        let url_label = match provider {
-            _ => "CalDAV URL",
-        };
         col = col.push(
             widget::settings::item(
-                url_label,
+                "CalDAV URL",
                 widget::text_input(url_placeholder, &self.url_input)
                     .on_input(Message::UrlChanged)
                     .width(Length::Fixed(260.0)),
