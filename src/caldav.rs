@@ -1,9 +1,37 @@
 use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use reqwest::{header, Client};
 use std::sync::LazyLock;
 use uuid::Uuid;
+
+/// Hard cap on CalDAV response bodies — prevents a malicious or misconfigured
+/// server from exhausting process memory with an unbounded stream.
+const MAX_BODY_BYTES: usize = 10 * 1024 * 1024; // 10 MiB
+
+/// Reads a response body up to `MAX_BODY_BYTES`, returning an error if the
+/// stream exceeds the limit before EOF.  Uses chunked streaming so memory is
+/// bounded even when no `Content-Length` header is present.
+async fn read_bounded_body(resp: reqwest::Response) -> Result<String, String> {
+    // Fast-reject when Content-Length is already over the cap.
+    if resp.content_length().map_or(false, |n| n > MAX_BODY_BYTES as u64) {
+        return Err("Server response too large (> 10 MiB)".to_string());
+    }
+    let mut buf = Vec::with_capacity(65_536);
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| {
+            eprintln!("CalDAV read body error: {}", e);
+            "Failed to read server response.".to_string()
+        })?;
+        buf.extend_from_slice(&chunk);
+        if buf.len() > MAX_BODY_BYTES {
+            return Err("Server response too large (> 10 MiB)".to_string());
+        }
+    }
+    String::from_utf8(buf).map_err(|_| "Server response is not valid UTF-8.".to_string())
+}
 
 // Static HTTP method constants — defined once, cloned at each call site.
 // `from_bytes` is infallible for these well-known ASCII strings; the
@@ -124,13 +152,8 @@ impl CalDavClient {
                 "Could not fetch calendars. Check your network connection.".to_string()
             })?;
 
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| {
-                eprintln!("CalDAV get_calendars read error: {}", e);
-                "Failed to read server response.".to_string()
-            })?;
+        let text = read_bounded_body(resp).await
+            .map_err(|e| { eprintln!("CalDAV get_calendars: {}", e); e })?;
         parse_calendars(&text)
     }
 
@@ -171,13 +194,8 @@ impl CalDavClient {
                 "Could not fetch events. Check your network connection.".to_string()
             })?;
 
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| {
-                eprintln!("CalDAV get_events read error: {}", e);
-                "Failed to read server response.".to_string()
-            })?;
+        let text = read_bounded_body(resp).await
+            .map_err(|e| { eprintln!("CalDAV get_events: {}", e); e })?;
         parse_events(&text)
     }
 }
@@ -552,9 +570,14 @@ fn validate_server_href(href: &str, base_url: &str) -> Result<String, String> {
         }
         let base = reqwest::Url::parse(base_url)
             .map_err(|_| "The configured server URL is invalid".to_string())?;
-        if parsed.host() != base.host() {
+        // Compare host AND port — a different port could be a different service
+        // on the same machine.  port_or_known_default() normalises omitted ports
+        // (e.g. https://host == https://host:443) so the comparison is consistent.
+        if parsed.host() != base.host()
+            || parsed.port_or_known_default() != base.port_or_known_default()
+        {
             return Err(
-                "Server href points to a different host than configured — request blocked"
+                "Server href points to a different host/port than configured — request blocked"
                     .to_string(),
             );
         }
@@ -635,6 +658,27 @@ mod tests {
             "https://safe.example.com",
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_server_href_rejects_different_port() {
+        use super::validate_server_href;
+        let result = validate_server_href(
+            "https://safe.example.com:8080/calendars/user/",
+            "https://safe.example.com",
+        );
+        assert!(result.is_err(), "different port should be rejected");
+    }
+
+    #[test]
+    fn validate_server_href_accepts_explicit_default_port() {
+        use super::validate_server_href;
+        // https://host:443 and https://host are the same server
+        let result = validate_server_href(
+            "https://safe.example.com:443/calendars/user/",
+            "https://safe.example.com",
+        );
+        assert!(result.is_ok(), "explicit default port should match implicit default");
     }
 
     #[test]

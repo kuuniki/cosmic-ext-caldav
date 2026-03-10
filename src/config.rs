@@ -22,8 +22,10 @@ pub struct AccountMeta {
 }
 
 // In-memory account with password loaded from keyring.
+// Not Serialize/Deserialize — passwords must never be written to disk through
+// this struct.  On-disk storage goes through AccountMeta (no password field).
 // Debug is implemented manually to redact the password field.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct Account {
     pub id: String,
     pub display_name: String,
