@@ -45,10 +45,14 @@ static REPORT: LazyLock<reqwest::Method> = LazyLock::new(|| {
 
 #[derive(Debug, Clone)]
 pub struct CalendarEvent {
+    /// Stored for completeness; not yet displayed in either UI.
+    #[allow(dead_code)]
     pub uid: String,
     pub summary: String,
     pub start: Option<DateTime<Utc>>,
     pub end: Option<DateTime<Utc>>,
+    /// Displayed in the settings app event card; not shown in the compact applet.
+    #[allow(dead_code)]
     pub description: Option<String>,
     pub location: Option<String>,
 }
@@ -56,7 +60,11 @@ pub struct CalendarEvent {
 #[derive(Debug, Clone)]
 pub struct Calendar {
     pub href: String,
+    /// Displayed in the settings app calendar list; not used in the applet.
+    #[allow(dead_code)]
     pub display_name: String,
+    /// Parsed for future use; not yet applied to the UI.
+    #[allow(dead_code)]
     pub color: Option<String>,
 }
 
@@ -399,6 +407,9 @@ fn unfold_ical_lines(ical: &str) -> Vec<String> {
     unfolded
 }
 
+/// Only called from `create_event` which is compiled into the applet binary;
+/// the settings binary does not create events so both are dead from its perspective.
+#[allow(dead_code)]
 fn escape_ical_text(s: &str) -> String {
     s.replace('\\', "\\\\")
      .replace(';', "\\;")
@@ -459,6 +470,9 @@ fn parse_ical_date(line: &str) -> Option<DateTime<Utc>> {
 }
 
 impl CalDavClient {
+    /// Called from the applet binary (SubmitEvent).  The settings binary has no
+    /// event-creation flow so the compiler flags this as dead code for that target.
+    #[allow(dead_code)]
     pub async fn create_event(
         &self,
         calendar_href: &str,
@@ -531,6 +545,7 @@ impl CalDavClient {
 }
 
 /// Generates a cryptographically random UUID v4 for use as a CalDAV event UID.
+#[allow(dead_code)]
 fn generate_uid() -> String {
     Uuid::new_v4().simple().to_string()
 }

@@ -493,9 +493,17 @@ impl App {
     }
 
     fn event_card(&self, event: &CalendarEvent) -> Element<'_, Message> {
-        let date_str = event.start
-            .map(|dt| dt.with_timezone(&Local).format("%a, %d %b %Y  %H:%M").to_string())
-            .unwrap_or_else(|| "No date".to_string());
+        let date_str = match event.start {
+            Some(start_dt) => {
+                let start = start_dt.with_timezone(&Local).format("%a, %d %b %Y  %H:%M");
+                match event.end {
+                    Some(end_dt) => format!("{} \u{2013} {}", start,
+                        end_dt.with_timezone(&Local).format("%H:%M")),
+                    None => start.to_string(),
+                }
+            }
+            None => "No date".to_string(),
+        };
 
         let loc_str = event.location.as_deref()
             .filter(|s| !s.is_empty())

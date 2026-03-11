@@ -441,13 +441,22 @@ impl CalDavApplet {
             col = col.push(text::body("No events this day"));
         } else {
             for (label, event) in day_events {
-                let time_str = event.start
+                let start_fmt = event.start
                     .map(|dt| dt.with_timezone(&Local).format("%H:%M").to_string())
                     .unwrap_or_default();
+                let time_str = match event.end {
+                    Some(end_dt) => format!("{}\u{2013}{}", start_fmt,
+                        end_dt.with_timezone(&Local).format("%H:%M")),
+                    None => start_fmt,
+                };
+                let title_str = match event.location.as_deref().filter(|s| !s.is_empty()) {
+                    Some(loc) => format!("{}: {} ({})", label, event.summary, loc),
+                    None => format!("{}: {}", label, event.summary),
+                };
                 col = col.push(
                     cosmic::iced::widget::row![
-                        text::body(time_str).width(Length::Fixed(42.0)),
-                        text::body(format!("{}: {}", label, event.summary)),
+                        text::body(time_str).width(Length::Fixed(96.0)),
+                        text::body(title_str),
                     ]
                     .spacing(4)
                     .align_y(Alignment::Center)
