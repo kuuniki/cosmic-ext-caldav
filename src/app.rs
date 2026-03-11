@@ -118,6 +118,9 @@ impl Application for App {
                         move |result| cosmic::Action::App(Message::CalendarsLoaded((), result)),
                     );
                 }
+                // Account not found — release the loading state so the UI doesn't lock.
+                self.is_loading = false;
+                self.status_message = Some("Account not found".into());
             }
             Message::ViewEvents(account_id, href) => {
                 let cal_name = self.calendars.iter()
@@ -136,6 +139,9 @@ impl Application for App {
                         move |result| cosmic::Action::App(Message::EventsLoaded((), (), result)),
                     );
                 }
+                // Account not found — release the loading state so the UI doesn't lock.
+                self.is_loading = false;
+                self.status_message = Some("Account not found".into());
             }
             Message::ProviderSelected(p) => {
                 match p.as_str() {
@@ -420,8 +426,8 @@ impl App {
             .into()
     }
 
-    fn view_calendars(&self, _account_id: &str) -> Element<'_, Message> {
-        let account_id = _account_id.to_string();
+    fn view_calendars(&self, account_id: &str) -> Element<'_, Message> {
+        let account_id = account_id.to_string();
         let mut col = widget::column::with_capacity(10)
             .spacing(8)
             .padding(24);

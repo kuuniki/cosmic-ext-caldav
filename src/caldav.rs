@@ -43,7 +43,7 @@ static REPORT: LazyLock<reqwest::Method> = LazyLock::new(|| {
     reqwest::Method::from_bytes(b"REPORT").expect("REPORT is a valid HTTP method")
 });
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CalendarEvent {
     pub uid: String,
     pub summary: String,
@@ -53,7 +53,7 @@ pub struct CalendarEvent {
     pub location: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Calendar {
     pub href: String,
     pub display_name: String,
@@ -93,9 +93,13 @@ impl CalDavClient {
         {
             format!("{}/", self.base_url.trim_end_matches('/'))
         } else {
+            // Encode '/' in the username so a username like "a/b" cannot traverse
+            // outside the calendars directory.  Other characters (e.g. '@') are
+            // legal in URL path segments and do not need encoding here.
+            let encoded_username = self.username.replace('/', "%2F");
             format!(
                 "{}/remote.php/dav/calendars/{}/",
-                self.base_url, self.username
+                self.base_url, encoded_username
             )
         }
     }
@@ -395,7 +399,6 @@ fn unfold_ical_lines(ical: &str) -> Vec<String> {
     unfolded
 }
 
-#[allow(dead_code)]
 fn escape_ical_text(s: &str) -> String {
     s.replace('\\', "\\\\")
      .replace(';', "\\;")
@@ -456,7 +459,6 @@ fn parse_ical_date(line: &str) -> Option<DateTime<Utc>> {
 }
 
 impl CalDavClient {
-    #[allow(dead_code)]
     pub async fn create_event(
         &self,
         calendar_href: &str,
@@ -561,13 +563,8 @@ fn validate_server_href(href: &str, base_url: &str) -> Result<String, String> {
     if href.starts_with("http://") || href.starts_with("https://") {
         let parsed = reqwest::Url::parse(href)
             .map_err(|_| "Server returned an invalid URL".to_string())?;
-        let scheme = parsed.scheme();
-        if scheme != "http" && scheme != "https" {
-            return Err(format!(
-                "Server returned a URL with an unsafe scheme '{}'",
-                scheme
-            ));
-        }
+        // The outer starts_with guard already guarantees http/https scheme;
+        // no redundant inner scheme check needed.
         let base = reqwest::Url::parse(base_url)
             .map_err(|_| "The configured server URL is invalid".to_string())?;
         // Compare host AND port — a different port could be a different service
