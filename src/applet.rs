@@ -386,12 +386,6 @@ impl Application for CalDavApplet {
             _ => "",
         };
 
-        let add_event_label = if self.show_add_form {
-            "Hide event form"
-        } else {
-            "Add event"
-        };
-
         let month_controls = cosmic::iced::widget::row![
             button::icon(widget::icon::from_name("go-previous-symbolic"))
                 .padding(8)
@@ -399,9 +393,11 @@ impl Application for CalDavApplet {
             button::icon(widget::icon::from_name("go-next-symbolic"))
                 .padding(8)
                 .on_press(Message::NextMonth),
-            button::standard(add_event_label).on_press(Message::ToggleAddForm),
+            button::icon(widget::icon::from_name("list-add-symbolic"))
+                .padding(8)
+                .on_press(Message::ToggleAddForm),
         ]
-        .spacing(6);
+        .spacing(4);
 
         let header = cosmic::iced::widget::row![
             text(format!("{} {}", month_name, self.view_year)).size(16),
