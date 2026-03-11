@@ -15,7 +15,10 @@ const MAX_BODY_BYTES: usize = 10 * 1024 * 1024; // 10 MiB
 /// bounded even when no `Content-Length` header is present.
 async fn read_bounded_body(resp: reqwest::Response) -> Result<String, String> {
     // Fast-reject when Content-Length is already over the cap.
-    if resp.content_length().map_or(false, |n| n > MAX_BODY_BYTES as u64) {
+    if resp
+        .content_length()
+        .map_or(false, |n| n > MAX_BODY_BYTES as u64)
+    {
         return Err("Server response too large (> 10 MiB)".to_string());
     }
     let mut buf = Vec::with_capacity(65_536);
@@ -50,10 +53,12 @@ pub struct CalendarEvent {
     pub uid: String,
     pub summary: String,
     pub start: Option<DateTime<Utc>>,
+    #[allow(dead_code)]
     pub end: Option<DateTime<Utc>>,
     /// Displayed in the settings app event card; not shown in the compact applet.
     #[allow(dead_code)]
     pub description: Option<String>,
+    #[allow(dead_code)]
     pub location: Option<String>,
 }
 
@@ -164,8 +169,10 @@ impl CalDavClient {
                 "Could not fetch calendars. Check your network connection.".to_string()
             })?;
 
-        let text = read_bounded_body(resp).await
-            .map_err(|e| { eprintln!("CalDAV get_calendars: {}", e); e })?;
+        let text = read_bounded_body(resp).await.map_err(|e| {
+            eprintln!("CalDAV get_calendars: {}", e);
+            e
+        })?;
         parse_calendars(&text)
     }
 
@@ -177,7 +184,8 @@ impl CalDavClient {
         // Fetch 7 days of past events and 60 days ahead — limits bandwidth for history
         let start = (now - chrono::Duration::days(7)).format("%Y%m%dT000000Z");
         let end = (now + chrono::Duration::days(60)).format("%Y%m%dT235959Z");
-        let body = format!(r#"<?xml version="1.0"?>
+        let body = format!(
+            r#"<?xml version="1.0"?>
 <c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
   <d:prop>
     <d:getetag/>
@@ -190,7 +198,8 @@ impl CalDavClient {
       </c:comp-filter>
     </c:comp-filter>
   </c:filter>
-</c:calendar-query>"#);
+</c:calendar-query>"#
+        );
 
         let resp = self
             .client
@@ -206,8 +215,10 @@ impl CalDavClient {
                 "Could not fetch events. Check your network connection.".to_string()
             })?;
 
-        let text = read_bounded_body(resp).await
-            .map_err(|e| { eprintln!("CalDAV get_events: {}", e); e })?;
+        let text = read_bounded_body(resp).await.map_err(|e| {
+            eprintln!("CalDAV get_events: {}", e);
+            e
+        })?;
         parse_events(&text)
     }
 }
@@ -412,10 +423,10 @@ fn unfold_ical_lines(ical: &str) -> Vec<String> {
 #[allow(dead_code)]
 fn escape_ical_text(s: &str) -> String {
     s.replace('\\', "\\\\")
-     .replace(';', "\\;")
-     .replace(',', "\\,")
-     .replace("\n", "\\n")
-     .replace("\r", "")
+        .replace(';', "\\;")
+        .replace(',', "\\,")
+        .replace("\n", "\\n")
+        .replace("\r", "")
 }
 
 fn unescape_ical_text(text: &str) -> String {
@@ -429,9 +440,9 @@ fn unescape_ical_text(text: &str) -> String {
 fn parse_ical_date(line: &str) -> Option<DateTime<Utc>> {
     // Extract TZID if present e.g. DTSTART;TZID=America/New_York:20240315T090000
     let tzid = if let Some(params) = line.split(':').next() {
-        params.split(';').find_map(|p| {
-            p.strip_prefix("TZID=").map(|tz| tz.to_string())
-        })
+        params
+            .split(';')
+            .find_map(|p| p.strip_prefix("TZID=").map(|tz| tz.to_string()))
     } else {
         None
     };
@@ -459,7 +470,10 @@ fn parse_ical_date(line: &str) -> Option<DateTime<Utc>> {
         if let Some(tz_name) = tzid {
             if let Ok(tz) = tz_name.parse::<chrono_tz::Tz>() {
                 use chrono::TimeZone;
-                return tz.from_local_datetime(&ndt).earliest().map(|dt| dt.to_utc());
+                return tz
+                    .from_local_datetime(&ndt)
+                    .earliest()
+                    .map(|dt| dt.to_utc());
             }
         }
         // Fallback: treat as UTC
@@ -477,24 +491,17 @@ impl CalDavClient {
         &self,
         calendar_href: &str,
         summary: &str,
-        date: chrono::NaiveDate,
-        hour: u32,
-        minute: u32,
-        duration_mins: u32,
+        start: chrono::DateTime<chrono::Local>,
+        end: chrono::DateTime<chrono::Local>,
         location: &str,
         description: &str,
         reminder_mins: i32,
     ) -> Result<(), String> {
         enforce_https(&self.base_url)?;
-        use chrono::TimeZone;
+        if end <= start {
+            return Err("End date/time must be after start date/time".to_string());
+        }
         let uid = generate_uid();
-        let naive = date.and_hms_opt(hour, minute, 0)
-            .ok_or_else(|| "Invalid time values".to_string())?;
-        let start = chrono::Local
-            .from_local_datetime(&naive)
-            .earliest()
-            .ok_or_else(|| "Invalid or ambiguous local time (DST gap)".to_string())?;
-        let end = start + chrono::Duration::minutes(duration_mins as i64);
         let fmt = "%Y%m%dT%H%M%S";
         let alarm = if reminder_mins > 0 {
             format!("BEGIN:VALARM\r\nTRIGGER:-PT{}M\r\nACTION:DISPLAY\r\nDESCRIPTION:Reminder\r\nEND:VALARM\r\n", reminder_mins)
@@ -560,11 +567,9 @@ fn enforce_https(url: &str) -> Result<(), String> {
     {
         Ok(())
     } else {
-        Err(
-            "CalDAV URL must use HTTPS to protect your credentials. \
+        Err("CalDAV URL must use HTTPS to protect your credentials. \
              Please change http:// to https://"
-                .to_string(),
-        )
+            .to_string())
     }
 }
 
@@ -576,8 +581,8 @@ fn enforce_https(url: &str) -> Result<(), String> {
 /// `base_url` without further restriction (the server already controls the path).
 fn validate_server_href(href: &str, base_url: &str) -> Result<String, String> {
     if href.starts_with("http://") || href.starts_with("https://") {
-        let parsed = reqwest::Url::parse(href)
-            .map_err(|_| "Server returned an invalid URL".to_string())?;
+        let parsed =
+            reqwest::Url::parse(href).map_err(|_| "Server returned an invalid URL".to_string())?;
         // The outer starts_with guard already guarantees http/https scheme;
         // no redundant inner scheme check needed.
         let base = reqwest::Url::parse(base_url)
@@ -596,11 +601,7 @@ fn validate_server_href(href: &str, base_url: &str) -> Result<String, String> {
         Ok(href.to_string())
     } else {
         // Relative path — combine with base_url
-        Ok(format!(
-            "{}{}",
-            base_url.trim_end_matches('/'),
-            href
-        ))
+        Ok(format!("{}{}", base_url.trim_end_matches('/'), href))
     }
 }
 
@@ -690,7 +691,10 @@ mod tests {
             "https://safe.example.com:443/calendars/user/",
             "https://safe.example.com",
         );
-        assert!(result.is_ok(), "explicit default port should match implicit default");
+        assert!(
+            result.is_ok(),
+            "explicit default port should match implicit default"
+        );
     }
 
     #[test]

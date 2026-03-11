@@ -1,12 +1,12 @@
+use chrono::{Datelike, Local, NaiveDate, NaiveDateTime};
 use cosmic::app::Task;
 use cosmic::iced::{
     platform_specific::shell::commands::popup::{destroy_popup, get_popup},
     Alignment, Length, Subscription,
 };
 use cosmic::iced_runtime::core::window;
-use cosmic::widget::{self, Id, autosize, button, container, grid, text};
-use cosmic::{Apply, Application, Element};
-use chrono::{Datelike, Local, NaiveDate};
+use cosmic::widget::{self, autosize, button, container, grid, text, Id};
+use cosmic::{Application, Apply, Element};
 use std::time::Duration;
 
 use crate::caldav::{CalDavClient, Calendar, CalendarEvent};
@@ -27,9 +27,10 @@ pub enum Message {
     SelectDay(u32),
     ToggleAddForm,
     FormTitleChanged(String),
-    FormHourChanged(String),
-    FormMinuteChanged(String),
-    FormDurationChanged(String),
+    FormStartDateChanged(String),
+    FormStartTimeChanged(String),
+    FormEndDateChanged(String),
+    FormEndTimeChanged(String),
     FormLocationChanged(String),
     FormDescriptionChanged(String),
     FormReminderChanged(String),
@@ -55,9 +56,10 @@ pub struct CalDavApplet {
     pending_syncs: usize,
     show_add_form: bool,
     form_title: String,
-    form_hour: String,
-    form_minute: String,
-    form_duration: String,
+    form_start_date: String,
+    form_start_time: String,
+    form_end_date: String,
+    form_end_time: String,
     form_location: String,
     form_description: String,
     form_reminder: String,
@@ -71,13 +73,16 @@ impl Application for CalDavApplet {
     type Message = Message;
     const APP_ID: &'static str = "dev.cosmic.applet.caldav";
 
-    fn core(&self) -> &cosmic::app::Core { &self.core }
-    fn core_mut(&mut self) -> &mut cosmic::app::Core { &mut self.core }
+    fn core(&self) -> &cosmic::app::Core {
+        &self.core
+    }
+    fn core_mut(&mut self) -> &mut cosmic::app::Core {
+        &mut self.core
+    }
 
     fn init(core: cosmic::app::Core, _flags: ()) -> (Self, Task<Message>) {
         let now = Local::now();
-        let today = NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())
-            .unwrap_or_default();
+        let today = NaiveDate::from_ymd_opt(now.year(), now.month(), now.day()).unwrap_or_default();
         let config = Config::load();
         let n_accounts = config.accounts.len();
         let accounts = config.accounts.clone();
@@ -95,9 +100,10 @@ impl Application for CalDavApplet {
             pending_syncs: n_accounts,
             show_add_form: false,
             form_title: String::new(),
-            form_hour: String::new(),
-            form_minute: String::new(),
-            form_duration: String::new(),
+            form_start_date: today.format("%Y-%m-%d").to_string(),
+            form_start_time: String::from("09:00"),
+            form_end_date: today.format("%Y-%m-%d").to_string(),
+            form_end_time: String::from("10:00"),
             form_location: String::new(),
             form_description: String::new(),
             form_reminder: String::from("15"),
@@ -128,14 +134,17 @@ impl Application for CalDavApplet {
                         Task::none()
                     };
                     let main_id = self.core.main_window_id().unwrap_or(window::Id::unique());
-                    let popup_settings = self.core.applet.get_popup_settings(
-                        main_id, new_id, None, None, None,
-                    );
+                    let popup_settings = self
+                        .core
+                        .applet
+                        .get_popup_settings(main_id, new_id, None, None, None);
                     return Task::batch(vec![get_popup(popup_settings), fetch_task]);
                 }
             }
             Message::PopupClosed(id) => {
-                if self.popup == Some(id) { self.popup = None; }
+                if self.popup == Some(id) {
+                    self.popup = None;
+                }
             }
             Message::Tick => {
                 self.now = Local::now();
@@ -155,18 +164,26 @@ impl Application for CalDavApplet {
             Message::CalendarsLoaded(account_id, Ok(cals)) => {
                 // Store the first account's calendars so SubmitEvent knows
                 // where to PUT new events.
-                if self.config.accounts.first().map(|a| a.id == account_id).unwrap_or(false) {
+                if self
+                    .config
+                    .accounts
+                    .first()
+                    .map(|a| a.id == account_id)
+                    .unwrap_or(false)
+                {
                     self.calendars = cals.clone();
                 }
                 if let Some(cal) = cals.into_iter().next() {
-                    if let Some(account) = self.config.accounts.iter()
+                    if let Some(account) = self
+                        .config
+                        .accounts
+                        .iter()
                         .find(|a| a.id == account_id)
                         .cloned()
                     {
                         let label = account.username.clone();
-                        let client = CalDavClient::new(
-                            account.url, account.username, account.password,
-                        );
+                        let client =
+                            CalDavClient::new(account.url, account.username, account.password);
                         let href = cal.href.clone();
                         return Task::perform(
                             async move { client.get_events(&href).await },
@@ -176,15 +193,20 @@ impl Application for CalDavApplet {
                 }
                 // No calendar or matching account — release this sync slot.
                 self.pending_syncs = self.pending_syncs.saturating_sub(1);
-                if self.pending_syncs == 0 { self.loading = false; }
+                if self.pending_syncs == 0 {
+                    self.loading = false;
+                }
             }
             Message::CalendarsLoaded(account_id, Err(e)) => {
                 eprintln!("CalendarsLoaded error for {}: {}", account_id, e);
                 self.pending_syncs = self.pending_syncs.saturating_sub(1);
-                if self.pending_syncs == 0 { self.loading = false; }
+                if self.pending_syncs == 0 {
+                    self.loading = false;
+                }
             }
             Message::EventsLoaded(label, Ok(events)) => {
-                self.events.extend(events.into_iter().map(|e| (label.clone(), e)));
+                self.events
+                    .extend(events.into_iter().map(|e| (label.clone(), e)));
                 self.pending_syncs = self.pending_syncs.saturating_sub(1);
                 if self.pending_syncs == 0 {
                     self.loading = false;
@@ -196,15 +218,25 @@ impl Application for CalDavApplet {
             Message::EventsLoaded(label, Err(e)) => {
                 eprintln!("EventsLoaded error for {}: {}", label, e);
                 self.pending_syncs = self.pending_syncs.saturating_sub(1);
-                if self.pending_syncs == 0 { self.loading = false; }
+                if self.pending_syncs == 0 {
+                    self.loading = false;
+                }
             }
             Message::PrevMonth => {
-                if self.view_month == 1 { self.view_month = 12; self.view_year -= 1; }
-                else { self.view_month -= 1; }
+                if self.view_month == 1 {
+                    self.view_month = 12;
+                    self.view_year -= 1;
+                } else {
+                    self.view_month -= 1;
+                }
             }
             Message::NextMonth => {
-                if self.view_month == 12 { self.view_month = 1; self.view_year += 1; }
-                else { self.view_month += 1; }
+                if self.view_month == 12 {
+                    self.view_month = 1;
+                    self.view_year += 1;
+                } else {
+                    self.view_month += 1;
+                }
             }
             Message::SelectDay(d) => {
                 self.date_selected = NaiveDate::from_ymd_opt(self.view_year, self.view_month, d)
@@ -213,56 +245,96 @@ impl Application for CalDavApplet {
             }
             Message::ToggleAddForm => {
                 self.show_add_form = !self.show_add_form;
+                if self.show_add_form {
+                    self.form_start_date = self.date_selected.format("%Y-%m-%d").to_string();
+                    self.form_end_date = self.date_selected.format("%Y-%m-%d").to_string();
+                }
                 self.form_error = None;
             }
-            Message::FormTitleChanged(s) => { self.form_title = s; }
-            Message::FormHourChanged(s) => { self.form_hour = s; }
-            Message::FormMinuteChanged(s) => { self.form_minute = s; }
-            Message::FormDurationChanged(s) => { self.form_duration = s; }
-            Message::FormLocationChanged(s) => { self.form_location = s; }
-            Message::FormDescriptionChanged(s) => { self.form_description = s; }
-            Message::FormReminderChanged(s) => { self.form_reminder = s; }
+            Message::FormTitleChanged(s) => {
+                self.form_title = s;
+            }
+            Message::FormStartDateChanged(s) => {
+                self.form_start_date = s;
+            }
+            Message::FormStartTimeChanged(s) => {
+                self.form_start_time = s;
+            }
+            Message::FormEndDateChanged(s) => {
+                self.form_end_date = s;
+            }
+            Message::FormEndTimeChanged(s) => {
+                self.form_end_time = s;
+            }
+            Message::FormLocationChanged(s) => {
+                self.form_location = s;
+            }
+            Message::FormDescriptionChanged(s) => {
+                self.form_description = s;
+            }
+            Message::FormReminderChanged(s) => {
+                self.form_reminder = s;
+            }
             Message::SubmitEvent => {
-                // Clamp to valid ranges before passing to chrono / iCalendar.
-                let hour = self.form_hour.parse::<u32>().unwrap_or(9).min(23);
-                let minute = self.form_minute.parse::<u32>().unwrap_or(0).min(59);
-                // Cap duration at 24 hours (1 440 minutes) to avoid malformed DTEND.
-                let duration = self.form_duration.parse::<u32>().unwrap_or(60).min(1440);
                 if self.form_title.trim().is_empty() {
                     self.form_error = Some("Title required".into());
-                } else if let Some(account) = self.config.accounts.first().cloned() {
-                    if let Some(cal) = self.calendars.first().cloned() {
-                        let client = CalDavClient::new(
-                            account.url, account.username, account.password,
-                        );
-                        let summary = self.form_title.clone();
-                        let date = self.date_selected;
-                        let href = cal.href.clone();
-                        let location = self.form_location.clone();
-                        let description = self.form_description.clone();
-                        let reminder = self.form_reminder.parse::<i32>().unwrap_or(15);
-                        return Task::perform(
-                            async move {
-                                client.create_event(
-                                    &href, &summary, date, hour, minute,
-                                    duration, &location, &description, reminder,
-                                ).await
-                            },
-                            |r| cosmic::Action::App(Message::EventCreated(r)),
-                        );
-                    } else {
-                        self.form_error = Some("No calendar found".into());
-                    }
                 } else {
-                    self.form_error = Some("No account configured".into());
+                    let start = parse_local_datetime(&self.form_start_date, &self.form_start_time);
+                    let end = parse_local_datetime(&self.form_end_date, &self.form_end_time);
+                    match (start, end) {
+                        (Err(e), _) | (_, Err(e)) => {
+                            self.form_error = Some(e);
+                        }
+                        (Ok(start), Ok(end)) if end <= start => {
+                            self.form_error =
+                                Some("End date/time must be after start date/time".into());
+                        }
+                        (Ok(start), Ok(end)) => {
+                            if let Some(account) = self.config.accounts.first().cloned() {
+                                if let Some(cal) = self.calendars.first().cloned() {
+                                    let client = CalDavClient::new(
+                                        account.url,
+                                        account.username,
+                                        account.password,
+                                    );
+                                    let summary = self.form_title.clone();
+                                    let href = cal.href.clone();
+                                    let location = self.form_location.clone();
+                                    let description = self.form_description.clone();
+                                    let reminder = self.form_reminder.parse::<i32>().unwrap_or(15);
+                                    return Task::perform(
+                                        async move {
+                                            client
+                                                .create_event(
+                                                    &href,
+                                                    &summary,
+                                                    start,
+                                                    end,
+                                                    &location,
+                                                    &description,
+                                                    reminder,
+                                                )
+                                                .await
+                                        },
+                                        |r| cosmic::Action::App(Message::EventCreated(r)),
+                                    );
+                                } else {
+                                    self.form_error = Some("No calendar found".into());
+                                }
+                            } else {
+                                self.form_error = Some("No account configured".into());
+                            }
+                        }
+                    }
                 }
             }
             Message::EventCreated(Ok(())) => {
                 self.show_add_form = false;
                 self.form_title = String::new();
-                self.form_hour = String::new();
-                self.form_minute = String::new();
-                self.form_duration = String::new();
+                self.form_start_date = self.date_selected.format("%Y-%m-%d").to_string();
+                self.form_start_time = String::from("09:00");
+                self.form_end_date = self.date_selected.format("%Y-%m-%d").to_string();
+                self.form_end_time = String::from("10:00");
                 self.form_location = String::new();
                 self.form_description = String::new();
                 self.form_reminder = String::from("15");
@@ -276,7 +348,9 @@ impl Application for CalDavApplet {
                     return spawn_sync_tasks(&self.config.accounts);
                 }
             }
-            Message::EventCreated(Err(e)) => { self.form_error = Some(e); }
+            Message::EventCreated(Err(e)) => {
+                self.form_error = Some(e);
+            }
         }
         Task::none()
     }
@@ -297,20 +371,33 @@ impl Application for CalDavApplet {
             .unwrap_or_default();
 
         let month_name = match self.view_month {
-            1=>"January",2=>"February",3=>"March",4=>"April",
-            5=>"May",6=>"June",7=>"July",8=>"August",
-            9=>"September",10=>"October",11=>"November",12=>"December",
-            _=>""
+            1 => "January",
+            2 => "February",
+            3 => "March",
+            4 => "April",
+            5 => "May",
+            6 => "June",
+            7 => "July",
+            8 => "August",
+            9 => "September",
+            10 => "October",
+            11 => "November",
+            12 => "December",
+            _ => "",
         };
 
         let month_controls = cosmic::iced::widget::row![
             button::icon(widget::icon::from_name("go-previous-symbolic"))
-                .padding(8).on_press(Message::PrevMonth),
+                .padding(8)
+                .on_press(Message::PrevMonth),
             button::icon(widget::icon::from_name("go-next-symbolic"))
-                .padding(8).on_press(Message::NextMonth),
+                .padding(8)
+                .on_press(Message::NextMonth),
             button::icon(widget::icon::from_name("list-add-symbolic"))
-                .padding(8).on_press(Message::ToggleAddForm),
-        ].spacing(4);
+                .padding(8)
+                .on_press(Message::ToggleAddForm),
+        ]
+        .spacing(4);
 
         let header = cosmic::iced::widget::row![
             text(format!("{} {}", month_name, self.view_year)).size(16),
@@ -324,7 +411,12 @@ impl Application for CalDavApplet {
 
         let content = cosmic::iced::widget::column![
             header,
-            calendar.padding(cosmic::iced::Padding { top: 0.0, right: 12.0, bottom: 4.0, left: 12.0 }),
+            calendar.padding(cosmic::iced::Padding {
+                top: 0.0,
+                right: 12.0,
+                bottom: 4.0,
+                left: 12.0
+            }),
             widget::divider::horizontal::default(),
             self.events_list(),
             self.add_event_section(),
@@ -335,10 +427,8 @@ impl Application for CalDavApplet {
 
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch(vec![
-            cosmic::iced::time::every(Duration::from_secs(1))
-                .map(|_| Message::Tick),
-            cosmic::iced::time::every(Duration::from_secs(300))
-                .map(|_| Message::SyncTick),
+            cosmic::iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick),
+            cosmic::iced::time::every(Duration::from_secs(300)).map(|_| Message::SyncTick),
         ])
     }
 
@@ -354,14 +444,17 @@ fn spawn_sync_tasks(accounts: &[Account]) -> Task<Message> {
         return Task::none();
     }
     Task::batch(
-        accounts.iter().cloned().map(|account| {
-            let account_id = account.id.clone();
-            let client = CalDavClient::new(account.url, account.username, account.password);
-            Task::perform(
-                async move { client.get_calendars().await },
-                move |r| cosmic::Action::App(Message::CalendarsLoaded(account_id, r)),
-            )
-        }).collect::<Vec<_>>(),
+        accounts
+            .iter()
+            .cloned()
+            .map(|account| {
+                let account_id = account.id.clone();
+                let client = CalDavClient::new(account.url, account.username, account.password);
+                Task::perform(async move { client.get_calendars().await }, move |r| {
+                    cosmic::Action::App(Message::CalendarsLoaded(account_id, r))
+                })
+            })
+            .collect::<Vec<_>>(),
     )
 }
 
@@ -370,18 +463,18 @@ impl CalDavApplet {
         let mut calendar = grid().width(Length::Fill);
 
         // First day of the month and what weekday it falls on (0=Sun)
-        let first_of_month = NaiveDate::from_ymd_opt(self.view_year, self.view_month, 1)
-            .unwrap_or_default();
+        let first_of_month =
+            NaiveDate::from_ymd_opt(self.view_year, self.view_month, 1).unwrap_or_default();
         let first_weekday = first_of_month.weekday().num_days_from_sunday();
         let days_in_month = days_in_month(self.view_year, self.view_month);
 
         // Day-of-week headers: Sun Mon Tue Wed Thu Fri Sat
-        let headers = ["Su","Mo","Tu","We","Th","Fr","Sa"];
+        let headers = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
         for h in headers {
             calendar = calendar.push(
                 text::caption(h)
                     .apply(container)
-                    .center_x(Length::Fixed(44.0))
+                    .center_x(Length::Fixed(44.0)),
             );
         }
         calendar = calendar.insert_row();
@@ -402,14 +495,16 @@ impl CalDavApplet {
                 calendar = calendar.push(
                     container(text(""))
                         .width(Length::Fixed(44.0))
-                        .height(Length::Fixed(44.0))
+                        .height(Length::Fixed(44.0)),
                 );
             } else {
                 let du = d as u32;
-                let is_selected = self.date_selected ==
-                    NaiveDate::from_ymd_opt(self.view_year, self.view_month, du).unwrap_or_default();
-                let is_today = today ==
-                    NaiveDate::from_ymd_opt(self.view_year, self.view_month, du).unwrap_or_default();
+                let is_selected = self.date_selected
+                    == NaiveDate::from_ymd_opt(self.view_year, self.view_month, du)
+                        .unwrap_or_default();
+                let is_today = today
+                    == NaiveDate::from_ymd_opt(self.view_year, self.view_month, du)
+                        .unwrap_or_default();
                 let has_events = self.events_on_day(du);
                 calendar = calendar.push(date_button(du, is_selected, is_today, has_events));
             }
@@ -418,18 +513,22 @@ impl CalDavApplet {
     }
 
     fn events_list(&self) -> Element<'_, Message> {
-        let day_events: Vec<(&str, &CalendarEvent)> = self.events.iter().filter_map(|(label, e)| {
-            e.start.and_then(|dt| {
-                let local = dt.with_timezone(&Local);
-                if NaiveDate::from_ymd_opt(local.year(), local.month(), local.day())
-                    == Some(self.date_selected)
-                {
-                    Some((label.as_str(), e))
-                } else {
-                    None
-                }
+        let day_events: Vec<(&str, &CalendarEvent)> = self
+            .events
+            .iter()
+            .filter_map(|(label, e)| {
+                e.start.and_then(|dt| {
+                    let local = dt.with_timezone(&Local);
+                    if NaiveDate::from_ymd_opt(local.year(), local.month(), local.day())
+                        == Some(self.date_selected)
+                    {
+                        Some((label.as_str(), e))
+                    } else {
+                        None
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         let mut col = widget::column::with_capacity(5).spacing(4).padding([8, 12]);
 
@@ -441,12 +540,16 @@ impl CalDavApplet {
             col = col.push(text::body("No events this day"));
         } else {
             for (label, event) in day_events {
-                let start_fmt = event.start
+                let start_fmt = event
+                    .start
                     .map(|dt| dt.with_timezone(&Local).format("%H:%M").to_string())
                     .unwrap_or_default();
                 let time_str = match event.end {
-                    Some(end_dt) => format!("{}\u{2013}{}", start_fmt,
-                        end_dt.with_timezone(&Local).format("%H:%M")),
+                    Some(end_dt) => format!(
+                        "{}\u{2013}{}",
+                        start_fmt,
+                        end_dt.with_timezone(&Local).format("%H:%M")
+                    ),
                     None => start_fmt,
                 };
                 let title_str = match event.location.as_deref().filter(|s| !s.is_empty()) {
@@ -459,7 +562,7 @@ impl CalDavApplet {
                         text::body(title_str),
                     ]
                     .spacing(4)
-                    .align_y(Alignment::Center)
+                    .align_y(Alignment::Center),
                 );
             }
         }
@@ -468,12 +571,14 @@ impl CalDavApplet {
 
     fn events_on_day(&self, day: u32) -> bool {
         self.events.iter().any(|(_, e)| {
-            e.start.map(|dt| {
-                let local = dt.with_timezone(&Local);
-                local.year() == self.view_year
-                    && local.month() == self.view_month
-                    && local.day() == day
-            }).unwrap_or(false)
+            e.start
+                .map(|dt| {
+                    let local = dt.with_timezone(&Local);
+                    local.year() == self.view_year
+                        && local.month() == self.view_month
+                        && local.day() == day
+                })
+                .unwrap_or(false)
         })
     }
 
@@ -483,55 +588,63 @@ impl CalDavApplet {
             return widget::column::with_capacity(0).into();
         }
 
-        let mut col = widget::column::with_capacity(8).spacing(6).padding([4, 12, 8, 12]);
+        let mut col = widget::column::with_capacity(8)
+            .spacing(6)
+            .padding([4, 12, 8, 12]);
         col = col.push(text::body(format!("New event — {}", date_label)));
 
         // Title
         col = col.push(
-            widget::text_input("Title *", &self.form_title)
-                .on_input(Message::FormTitleChanged)
+            widget::text_input("Title *", &self.form_title).on_input(Message::FormTitleChanged),
         );
 
-        // Start time row
-        col = col.push(text::caption("Start time"));
+        // Start/end date and time rows
+        col = col.push(text::caption("Start (YYYY-MM-DD, HH:MM)"));
         col = col.push(
             cosmic::iced::widget::row![
-                widget::text_input("HH", &self.form_hour)
-                    .on_input(Message::FormHourChanged)
-                    .width(Length::Fixed(52.0)),
-                text::body(":"),
-                widget::text_input("MM", &self.form_minute)
-                    .on_input(Message::FormMinuteChanged)
-                    .width(Length::Fixed(52.0)),
-            ].spacing(4).align_y(cosmic::iced::Alignment::Center)
+                widget::text_input("2026-01-15", &self.form_start_date)
+                    .on_input(Message::FormStartDateChanged)
+                    .width(Length::Fixed(120.0)),
+                widget::text_input("09:00", &self.form_start_time)
+                    .on_input(Message::FormStartTimeChanged)
+                    .width(Length::Fixed(80.0)),
+            ]
+            .spacing(6)
+            .align_y(cosmic::iced::Alignment::Center),
         );
 
-        // Duration
-        col = col.push(text::caption("Duration (minutes)"));
+        col = col.push(text::caption("End (YYYY-MM-DD, HH:MM)"));
         col = col.push(
-            widget::text_input("60", &self.form_duration)
-                .on_input(Message::FormDurationChanged)
+            cosmic::iced::widget::row![
+                widget::text_input("2026-01-15", &self.form_end_date)
+                    .on_input(Message::FormEndDateChanged)
+                    .width(Length::Fixed(120.0)),
+                widget::text_input("10:00", &self.form_end_time)
+                    .on_input(Message::FormEndTimeChanged)
+                    .width(Length::Fixed(80.0)),
+            ]
+            .spacing(6)
+            .align_y(cosmic::iced::Alignment::Center),
         );
 
         // Location
         col = col.push(text::caption("Location"));
         col = col.push(
             widget::text_input("Location", &self.form_location)
-                .on_input(Message::FormLocationChanged)
+                .on_input(Message::FormLocationChanged),
         );
 
         // Description
         col = col.push(text::caption("Description"));
         col = col.push(
             widget::text_input("Notes", &self.form_description)
-                .on_input(Message::FormDescriptionChanged)
+                .on_input(Message::FormDescriptionChanged),
         );
 
         // Reminder
         col = col.push(text::caption("Reminder (minutes before)"));
         col = col.push(
-            widget::text_input("15", &self.form_reminder)
-                .on_input(Message::FormReminderChanged)
+            widget::text_input("15", &self.form_reminder).on_input(Message::FormReminderChanged),
         );
 
         if let Some(err) = &self.form_error {
@@ -543,16 +656,21 @@ impl CalDavApplet {
                 button::custom(text::body("Save"))
                     .padding([6, 32])
                     .class(cosmic::theme::Button::Suggested)
-                    .on_press(Message::SubmitEvent)
+                    .on_press(Message::SubmitEvent),
             )
-            .center_x(Length::Fill)
+            .center_x(Length::Fill),
         );
 
         col.into()
     }
 }
 
-fn date_button(day: u32, is_selected: bool, is_today: bool, has_events: bool) -> button::Button<'static, Message> {
+fn date_button(
+    day: u32,
+    is_selected: bool,
+    is_today: bool,
+    has_events: bool,
+) -> button::Button<'static, Message> {
     let style = if is_selected {
         cosmic::theme::Button::Suggested
     } else if is_today {
@@ -571,10 +689,10 @@ fn date_button(day: u32, is_selected: bool, is_today: bool, has_events: bool) ->
             .center(Length::Fill)
     };
     button::custom(label)
-    .class(style)
-    .width(Length::Fixed(44.0))
-    .height(Length::Fixed(44.0))
-    .on_press(Message::SelectDay(day))
+        .class(style)
+        .width(Length::Fixed(44.0))
+        .height(Length::Fixed(44.0))
+        .on_press(Message::SelectDay(day))
 }
 
 fn days_in_month(year: i32, month: u32) -> u32 {
@@ -583,5 +701,22 @@ fn days_in_month(year: i32, month: u32) -> u32 {
     } else {
         NaiveDate::from_ymd_opt(year, month + 1, 1)
     };
-    next.and_then(|d| d.pred_opt()).map(|d| d.day()).unwrap_or(30)
+    next.and_then(|d| d.pred_opt())
+        .map(|d| d.day())
+        .unwrap_or(30)
+}
+
+fn parse_local_datetime(date: &str, time: &str) -> Result<chrono::DateTime<Local>, String> {
+    use chrono::TimeZone;
+
+    let naive_date = NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d")
+        .map_err(|_| "Invalid date format. Use YYYY-MM-DD".to_string())?;
+    let naive_time = chrono::NaiveTime::parse_from_str(time.trim(), "%H:%M")
+        .map_err(|_| "Invalid time format. Use HH:MM (24-hour)".to_string())?;
+    let naive = NaiveDateTime::new(naive_date, naive_time);
+
+    Local
+        .from_local_datetime(&naive)
+        .earliest()
+        .ok_or_else(|| "Invalid or ambiguous local date/time (DST gap)".to_string())
 }
