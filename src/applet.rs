@@ -10,7 +10,7 @@ use chrono::{Datelike, Local, NaiveDate};
 use std::time::Duration;
 
 use crate::caldav::{CalDavClient, Calendar, CalendarEvent};
-use crate::config::Config;
+use crate::config::{Account, Config};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -18,8 +18,10 @@ pub enum Message {
     PopupClosed(window::Id),
     Tick,
     SyncTick,
-    CalendarsLoaded(Result<Vec<Calendar>, String>),
-    EventsLoaded(Result<Vec<CalendarEvent>, String>),
+    /// Calendar list fetched for one account.  String = account id.
+    CalendarsLoaded(String, Result<Vec<Calendar>, String>),
+    /// Events fetched for one account.  String = account username (display label).
+    EventsLoaded(String, Result<Vec<CalendarEvent>, String>),
     PrevMonth,
     NextMonth,
     SelectDay(u32),
@@ -42,14 +44,15 @@ pub struct CalDavApplet {
     view_year: i32,
     view_month: u32,
     date_selected: NaiveDate,
+    /// First account's calendars — used to determine the target for event creation.
     calendars: Vec<Calendar>,
-    events: Vec<CalendarEvent>,
+    /// Events from all accounts, each tagged with the account username label.
+    events: Vec<(String, CalendarEvent)>,
     config: Config,
     loading: bool,
-    /// True while a calendar/event fetch is in flight.
-    /// SyncTick is ignored when this is true to prevent concurrent requests
-    /// from stacking up and overwriting state with stale data.
-    syncing: bool,
+    /// Number of in-flight calendar/event fetch tasks across all accounts.
+    /// SyncTick is skipped while this is > 0 to prevent overlapping syncs.
+    pending_syncs: usize,
     show_add_form: bool,
     form_title: String,
     form_hour: String,
@@ -76,11 +79,8 @@ impl Application for CalDavApplet {
         let today = NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())
             .unwrap_or_default();
         let config = Config::load();
-        // Extract the first account before moving `config` into the struct so we
-        // can correctly initialise `syncing` and build the init task without a
-        // borrow-after-move issue.
-        let first_account = config.accounts.first().cloned();
-        let has_accounts = first_account.is_some();
+        let n_accounts = config.accounts.len();
+        let accounts = config.accounts.clone();
         let app = Self {
             core,
             popup: None,
@@ -92,7 +92,7 @@ impl Application for CalDavApplet {
             last_synced: None,
             config,
             loading: false,
-            syncing: has_accounts,
+            pending_syncs: n_accounts,
             show_add_form: false,
             form_title: String::new(),
             form_hour: String::new(),
@@ -104,15 +104,7 @@ impl Application for CalDavApplet {
             form_error: None,
             now,
         };
-        let init_task = if let Some(account) = first_account {
-            let client = CalDavClient::new(account.url, account.username, account.password);
-            Task::perform(
-                async move { client.get_calendars().await },
-                |r| cosmic::Action::App(Message::CalendarsLoaded(r)),
-            )
-        } else {
-            Task::none()
-        };
+        let init_task = spawn_sync_tasks(&accounts);
         (app, init_task)
     }
 
@@ -124,17 +116,15 @@ impl Application for CalDavApplet {
                 } else {
                     let new_id = window::Id::unique();
                     self.popup = Some(new_id);
-                    let fetch_task = if let Some(account) = self.config.accounts.first().cloned() {
+                    let n = self.config.accounts.len();
+                    let fetch_task = if n > 0 {
                         self.loading = true;
-                        self.syncing = true;
-                        let client = CalDavClient::new(account.url, account.username, account.password);
-                        Task::perform(
-                            async move { client.get_calendars().await },
-                            |r| cosmic::Action::App(Message::CalendarsLoaded(r)),
-                        )
+                        self.pending_syncs = n;
+                        self.events.clear();
+                        self.calendars.clear();
+                        spawn_sync_tasks(&self.config.accounts)
                     } else {
                         self.loading = false;
-                        self.syncing = false;
                         Task::none()
                     };
                     let main_id = self.core.main_window_id().unwrap_or(window::Id::unique());
@@ -151,51 +141,62 @@ impl Application for CalDavApplet {
                 self.now = Local::now();
             }
             Message::SyncTick => {
-                // Skip if a sync is already in-flight — prevents concurrent requests
-                // from stacking up when the server is slow (< 300 s response time).
-                if self.popup.is_none() && !self.syncing {
-                    if let Some(account) = self.config.accounts.first().cloned() {
-                        self.syncing = true;
-                        let client = CalDavClient::new(account.url, account.username, account.password);
-                        return Task::perform(
-                            async move { client.get_calendars().await },
-                            |r| cosmic::Action::App(Message::CalendarsLoaded(r)),
-                        );
+                // Skip if any sync task is still running.
+                if self.popup.is_none() && self.pending_syncs == 0 {
+                    let n = self.config.accounts.len();
+                    if n > 0 {
+                        self.pending_syncs = n;
+                        self.events.clear();
+                        self.calendars.clear();
+                        return spawn_sync_tasks(&self.config.accounts);
                     }
                 }
             }
-            Message::CalendarsLoaded(Ok(cals)) => {
-                self.last_synced = Some(Local::now());
-                self.calendars = cals;
-                if let Some(cal) = self.calendars.first().cloned() {
-                    if let Some(account) = self.config.accounts.first().cloned() {
-                        let client = CalDavClient::new(account.url, account.username, account.password);
+            Message::CalendarsLoaded(account_id, Ok(cals)) => {
+                // Store the first account's calendars so SubmitEvent knows
+                // where to PUT new events.
+                if self.config.accounts.first().map(|a| a.id == account_id).unwrap_or(false) {
+                    self.calendars = cals.clone();
+                }
+                if let Some(cal) = cals.into_iter().next() {
+                    if let Some(account) = self.config.accounts.iter()
+                        .find(|a| a.id == account_id)
+                        .cloned()
+                    {
+                        let label = account.username.clone();
+                        let client = CalDavClient::new(
+                            account.url, account.username, account.password,
+                        );
                         let href = cal.href.clone();
                         return Task::perform(
                             async move { client.get_events(&href).await },
-                            |r| cosmic::Action::App(Message::EventsLoaded(r)),
+                            move |r| cosmic::Action::App(Message::EventsLoaded(label, r)),
                         );
                     }
                 }
-                // No calendars returned (or no account) — release the lock so
-                // future SyncTick cycles are not permanently blocked.
-                self.loading = false;
-                self.syncing = false;
+                // No calendar or matching account — release this sync slot.
+                self.pending_syncs = self.pending_syncs.saturating_sub(1);
+                if self.pending_syncs == 0 { self.loading = false; }
             }
-            Message::CalendarsLoaded(Err(e)) => {
-                eprintln!("CalendarsLoaded error: {}", e);
-                self.loading = false;
-                self.syncing = false;
+            Message::CalendarsLoaded(account_id, Err(e)) => {
+                eprintln!("CalendarsLoaded error for {}: {}", account_id, e);
+                self.pending_syncs = self.pending_syncs.saturating_sub(1);
+                if self.pending_syncs == 0 { self.loading = false; }
             }
-            Message::EventsLoaded(Ok(events)) => {
-                self.loading = false;
-                self.syncing = false;
-                self.events = events;
+            Message::EventsLoaded(label, Ok(events)) => {
+                self.events.extend(events.into_iter().map(|e| (label.clone(), e)));
+                self.pending_syncs = self.pending_syncs.saturating_sub(1);
+                if self.pending_syncs == 0 {
+                    self.loading = false;
+                    self.last_synced = Some(Local::now());
+                    // Sort merged events from all accounts by start time.
+                    self.events.sort_by_key(|(_, e)| e.start);
+                }
             }
-            Message::EventsLoaded(Err(e)) => {
-                eprintln!("EventsLoaded error: {}", e);
-                self.loading = false;
-                self.syncing = false;
+            Message::EventsLoaded(label, Err(e)) => {
+                eprintln!("EventsLoaded error for {}: {}", label, e);
+                self.pending_syncs = self.pending_syncs.saturating_sub(1);
+                if self.pending_syncs == 0 { self.loading = false; }
             }
             Message::PrevMonth => {
                 if self.view_month == 1 { self.view_month = 12; self.view_year -= 1; }
@@ -210,7 +211,10 @@ impl Application for CalDavApplet {
                     .unwrap_or(self.date_selected);
                 self.show_add_form = false;
             }
-            Message::ToggleAddForm => { self.show_add_form = !self.show_add_form; self.form_error = None; }
+            Message::ToggleAddForm => {
+                self.show_add_form = !self.show_add_form;
+                self.form_error = None;
+            }
             Message::FormTitleChanged(s) => { self.form_title = s; }
             Message::FormHourChanged(s) => { self.form_hour = s; }
             Message::FormMinuteChanged(s) => { self.form_minute = s; }
@@ -219,16 +223,18 @@ impl Application for CalDavApplet {
             Message::FormDescriptionChanged(s) => { self.form_description = s; }
             Message::FormReminderChanged(s) => { self.form_reminder = s; }
             Message::SubmitEvent => {
-                // Clamp to valid ranges before passing to chrono / iCalendar
+                // Clamp to valid ranges before passing to chrono / iCalendar.
                 let hour = self.form_hour.parse::<u32>().unwrap_or(9).min(23);
                 let minute = self.form_minute.parse::<u32>().unwrap_or(0).min(59);
-                // Cap duration at 24 hours (1 440 minutes) to avoid malformed DTEND
+                // Cap duration at 24 hours (1 440 minutes) to avoid malformed DTEND.
                 let duration = self.form_duration.parse::<u32>().unwrap_or(60).min(1440);
                 if self.form_title.trim().is_empty() {
                     self.form_error = Some("Title required".into());
                 } else if let Some(account) = self.config.accounts.first().cloned() {
                     if let Some(cal) = self.calendars.first().cloned() {
-                        let client = CalDavClient::new(account.url, account.username, account.password);
+                        let client = CalDavClient::new(
+                            account.url, account.username, account.password,
+                        );
                         let summary = self.form_title.clone();
                         let date = self.date_selected;
                         let href = cal.href.clone();
@@ -236,7 +242,12 @@ impl Application for CalDavApplet {
                         let description = self.form_description.clone();
                         let reminder = self.form_reminder.parse::<i32>().unwrap_or(15);
                         return Task::perform(
-                            async move { client.create_event(&href, &summary, date, hour, minute, duration, &location, &description, reminder).await },
+                            async move {
+                                client.create_event(
+                                    &href, &summary, date, hour, minute,
+                                    duration, &location, &description, reminder,
+                                ).await
+                            },
                             |r| cosmic::Action::App(Message::EventCreated(r)),
                         );
                     } else {
@@ -256,16 +267,13 @@ impl Application for CalDavApplet {
                 self.form_description = String::new();
                 self.form_reminder = String::from("15");
                 self.form_error = None;
-                // Reload events
-                if let Some(cal) = self.calendars.first().cloned() {
-                    if let Some(account) = self.config.accounts.first().cloned() {
-                        let client = CalDavClient::new(account.url, account.username, account.password);
-                        let href = cal.href.clone();
-                        return Task::perform(
-                            async move { client.get_events(&href).await },
-                            |r| cosmic::Action::App(Message::EventsLoaded(r)),
-                        );
-                    }
+                // Reload events for all accounts so the new event appears.
+                let n = self.config.accounts.len();
+                if n > 0 {
+                    self.pending_syncs = n;
+                    self.events.clear();
+                    self.calendars.clear();
+                    return spawn_sync_tasks(&self.config.accounts);
                 }
             }
             Message::EventCreated(Err(e)) => { self.form_error = Some(e); }
@@ -339,6 +347,24 @@ impl Application for CalDavApplet {
     }
 }
 
+/// Spawns one `get_calendars` task per account, all running concurrently.
+/// Returns `Task::none()` when `accounts` is empty.
+fn spawn_sync_tasks(accounts: &[Account]) -> Task<Message> {
+    if accounts.is_empty() {
+        return Task::none();
+    }
+    Task::batch(
+        accounts.iter().cloned().map(|account| {
+            let account_id = account.id.clone();
+            let client = CalDavClient::new(account.url, account.username, account.password);
+            Task::perform(
+                async move { client.get_calendars().await },
+                move |r| cosmic::Action::App(Message::CalendarsLoaded(account_id, r)),
+            )
+        }).collect::<Vec<_>>(),
+    )
+}
+
 impl CalDavApplet {
     fn calendar_grid(&self, today: NaiveDate) -> widget::Grid<'_, Message> {
         let mut calendar = grid().width(Length::Fill);
@@ -392,12 +418,17 @@ impl CalDavApplet {
     }
 
     fn events_list(&self) -> Element<'_, Message> {
-        let day_events: Vec<&CalendarEvent> = self.events.iter().filter(|e| {
-            e.start.map(|dt| {
+        let day_events: Vec<(&str, &CalendarEvent)> = self.events.iter().filter_map(|(label, e)| {
+            e.start.and_then(|dt| {
                 let local = dt.with_timezone(&Local);
-                NaiveDate::from_ymd_opt(local.year(), local.month(), local.day())
+                if NaiveDate::from_ymd_opt(local.year(), local.month(), local.day())
                     == Some(self.date_selected)
-            }).unwrap_or(false)
+                {
+                    Some((label.as_str(), e))
+                } else {
+                    None
+                }
+            })
         }).collect();
 
         let mut col = widget::column::with_capacity(5).spacing(4).padding([8, 12]);
@@ -409,14 +440,14 @@ impl CalDavApplet {
         } else if day_events.is_empty() {
             col = col.push(text::body("No events this day"));
         } else {
-            for event in day_events {
+            for (label, event) in day_events {
                 let time_str = event.start
                     .map(|dt| dt.with_timezone(&Local).format("%H:%M").to_string())
                     .unwrap_or_default();
                 col = col.push(
                     cosmic::iced::widget::row![
                         text::body(time_str).width(Length::Fixed(42.0)),
-                        text::body(event.summary.clone()),
+                        text::body(format!("{}: {}", label, event.summary)),
                     ]
                     .spacing(4)
                     .align_y(Alignment::Center)
@@ -427,7 +458,7 @@ impl CalDavApplet {
     }
 
     fn events_on_day(&self, day: u32) -> bool {
-        self.events.iter().any(|e| {
+        self.events.iter().any(|(_, e)| {
             e.start.map(|dt| {
                 let local = dt.with_timezone(&Local);
                 local.year() == self.view_year
@@ -510,7 +541,6 @@ impl CalDavApplet {
 
         col.into()
     }
-
 }
 
 fn date_button(day: u32, is_selected: bool, is_today: bool, has_events: bool) -> button::Button<'static, Message> {
