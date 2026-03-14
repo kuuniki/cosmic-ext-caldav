@@ -1,0 +1,31 @@
+[package]
+name = "cosmic-caldav"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "cosmic-caldav"
+path = "src/main.rs"
+
+[[bin]]
+name = "cosmic-applet-caldav"
+path = "src/applet_main.rs"
+
+[dependencies]
+dirs = "5"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+reqwest = { version = "0.12", features = ["native-tls", "stream"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+quick-xml = { version = "0.36", features = ["serialize"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10.4"
+keyring = { version = "3.6.3", features = ["sync-secret-service", "crypto-rust"] }
+uuid = { version = "1", features = ["v4"] }
+zeroize = "1"
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic"
+default-features = false
+features = ["tokio", "wayland", "winit", "multi-window", "desktop", "applet", "autosize"]
