@@ -112,7 +112,11 @@ impl Application for App {
                 self.is_loading = true;
                 self.status_message = None;
                 if let Some(account) = self.config.accounts.iter().find(|a| a.id == account_id).cloned() {
-                    let client = CalDavClient::new(account.url, account.username, account.password);
+                    let client = CalDavClient::new(
+                        account.url.clone(),
+                        account.username.clone(),
+                        account.password.clone(),
+                    );
                     return Task::perform(
                         async move { client.get_calendars().await },
                         move |result| cosmic::Action::App(Message::CalendarsLoaded(result)),
@@ -132,7 +136,11 @@ impl Application for App {
                 self.is_loading = true;
                 self.status_message = None;
                 if let Some(account) = self.config.accounts.iter().find(|a| a.id == account_id).cloned() {
-                    let client = CalDavClient::new(account.url, account.username, account.password);
+                    let client = CalDavClient::new(
+                        account.url.clone(),
+                        account.username.clone(),
+                        account.password.clone(),
+                    );
                     let h = href.clone();
                     return Task::perform(
                         async move { client.get_events(&h).await },
