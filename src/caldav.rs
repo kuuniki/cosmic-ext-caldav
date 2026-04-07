@@ -745,8 +745,15 @@ fn validate_server_href(href: &str, base_url: &str) -> Result<String, String> {
         }
         Ok(href.to_string())
     } else {
-        // Relative path — combine with base_url
-        Ok(format!("{}{}", base_url.trim_end_matches('/'), href))
+        // Relative path — resolve it against the configured base URL.
+        // For root-relative hrefs like `/calendar/dav/...` this keeps only the
+        // origin from `base_url`, which avoids duplicating the base path for
+        // providers such as Google CalDAV.
+        let base = reqwest::Url::parse(base_url)
+            .map_err(|_| "The configured server URL is invalid".to_string())?;
+        base.join(href)
+            .map(|url| url.to_string())
+            .map_err(|_| "Server returned an invalid URL".to_string())
     }
 }
 
@@ -853,6 +860,39 @@ mod tests {
             result.unwrap(),
             "https://safe.example.com/remote.php/dav/calendars/user/personal/"
         );
+    }
+
+    #[test]
+    fn validate_server_href_combines_google_relative_with_origin_only() {
+        use super::validate_server_href;
+        let result = validate_server_href(
+            "/calendar/dav/user@gmail.com/events/",
+            "https://www.google.com/calendar/dav/user@gmail.com/events/",
+        );
+        assert_eq!(result.unwrap(), "https://www.google.com/calendar/dav/user@gmail.com/events/");
+    }
+
+    #[test]
+    fn validate_server_href_combines_relative_preserving_non_default_port() {
+        use super::validate_server_href;
+        let result = validate_server_href(
+            "/dav/calendars/user/personal/",
+            "https://safe.example.com:8443/base/path/",
+        );
+        assert_eq!(
+            result.unwrap(),
+            "https://safe.example.com:8443/dav/calendars/user/personal/"
+        );
+    }
+
+    #[test]
+    fn validate_server_href_resolves_path_relative_href() {
+        use super::validate_server_href;
+        let result = validate_server_href(
+            "events/test.ics",
+            "https://safe.example.com/calendars/user/",
+        );
+        assert_eq!(result.unwrap(), "https://safe.example.com/calendars/user/events/test.ics");
     }
 
     #[test]
