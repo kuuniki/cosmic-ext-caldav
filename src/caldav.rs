@@ -719,42 +719,37 @@ fn enforce_https(url: &str) -> Result<(), String> {
 /// requests to an attacker-controlled host.  Relative hrefs are combined with
 /// `base_url` without further restriction (the server already controls the path).
 fn validate_server_href(href: &str, base_url: &str) -> Result<String, String> {
-    if href.starts_with("http://") || href.starts_with("https://") {
-        let parsed =
-            reqwest::Url::parse(href).map_err(|_| "Server returned an invalid URL".to_string())?;
-        let base = reqwest::Url::parse(base_url)
-            .map_err(|_| "The configured server URL is invalid".to_string())?;
-        // Verify scheme matches — a malicious server could return an http://
-        // href for an https:// base URL, causing credentials to be sent in
-        // plaintext even though the user configured HTTPS.
-        if parsed.scheme() != base.scheme() {
-            return Err(
-                "Server href uses a different scheme than configured — request blocked".to_string(),
-            );
-        }
-        // Compare host AND port — a different port could be a different service
-        // on the same machine.  port_or_known_default() normalises omitted ports
-        // (e.g. https://host == https://host:443) so the comparison is consistent.
-        if parsed.host() != base.host()
-            || parsed.port_or_known_default() != base.port_or_known_default()
-        {
-            return Err(
-                "Server href points to a different host/port than configured — request blocked"
-                    .to_string(),
-            );
-        }
-        Ok(href.to_string())
+    let base = reqwest::Url::parse(base_url)
+        .map_err(|_| "The configured server URL is invalid".to_string())?;
+
+    let resolved = if href.starts_with("http://") || href.starts_with("https://") {
+        reqwest::Url::parse(href)
+            .map_err(|_| "Server returned an invalid URL".to_string())?
     } else {
-        // Relative path — resolve it against the configured base URL.
-        // For root-relative hrefs like `/calendar/dav/...` this keeps only the
-        // origin from `base_url`, which avoids duplicating the base path for
-        // providers such as Google CalDAV.
-        let base = reqwest::Url::parse(base_url)
-            .map_err(|_| "The configured server URL is invalid".to_string())?;
         base.join(href)
-            .map(|url| url.to_string())
-            .map_err(|_| "Server returned an invalid URL".to_string())
+            .map_err(|_| "Server returned an invalid URL".to_string())?
+    };
+
+    if resolved.scheme() != "http" && resolved.scheme() != "https" {
+        return Err("Server href uses an unsupported URL scheme".to_string());
     }
+
+    if resolved.scheme() != base.scheme() {
+        return Err(
+            "Server href uses a different scheme than configured — request blocked".to_string(),
+        );
+    }
+
+    if resolved.host() != base.host()
+        || resolved.port_or_known_default() != base.port_or_known_default()
+    {
+        return Err(
+            "Server href points to a different host/port than configured — request blocked"
+                .to_string(),
+        );
+    }
+
+    Ok(resolved.to_string())
 }
 
 #[cfg(test)]
@@ -893,6 +888,16 @@ mod tests {
             "https://safe.example.com/calendars/user/",
         );
         assert_eq!(result.unwrap(), "https://safe.example.com/calendars/user/events/test.ics");
+    }
+
+    #[test]
+    fn validate_server_href_rejects_network_path_reference_to_different_host() {
+        use super::validate_server_href;
+        let result = validate_server_href(
+            "//evil.example/steal",
+            "https://safe.example.com/calendar/dav/user@gmail.com/events/",
+        );
+        assert!(result.is_err(), "network-path reference should be rejected");
     }
 
     #[test]
