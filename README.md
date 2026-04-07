@@ -1,6 +1,6 @@
 ## Overview
 
-An integrated panel calendar + CalDAV applet for the COSMIC Desktop Environment. This applet is for COSMIC users who want lightweight calendar access from the panel, especially if they already use CalDAV-compatible providers and want a more integrated desktop experience.
+An integrated panel calendar + CalDAV applet for the COSMIC Desktop Environment. This applet is for COSMIC desktop users who want convenient CalDAV calendar access (such as from providers like Google, Nextcloud, Outlook/365, or other CalDAV-compatible services) directly via the panel. This applet is lightweight and provides an integrated desktop experience without extra clutter on your panel. 
 
 **Key Features**
   - Add and manage multiple CalDAV accounts
@@ -34,20 +34,10 @@ COSMIC Settings -> Desktop -> Panel -> Configure panel applets -> Add applet -> 
 This project was built with the assistance of AI tools (vibecoded); specifically, Claude and Codex.
 
 **Dependencies**
-
-- libcosmic (Pop!_OS COSMIC app/appet framework)
-- chrono
-- chrono-tz
-- dirs
-- keyring
-- quick-xml
-- reqwest
-- serde
-- serde_json
-- tokio
-
-**The source also currently references:**
-
-- zeroize
-- futures-util
-- uuid
+- **`libcosmic`** = UI + COSMIC integration
+- **`reqwest` + `quick-xml`** = talk to CalDAV servers
+- **`tokio` + `futures-util`** = do network/background work without freezing
+- **`chrono` + `chrono-tz`** = dates, times, timezones
+- **`serde` + `serde_json` + `dirs`** = config storage
+- **`keyring` + `zeroize`** = safer secret handling
+- **`uuid`** = unique event IDs
