@@ -142,307 +142,67 @@ impl Application for CalDavApplet {
         (app, init_task)
     }
 
-fn update(&mut self, message: Message) -> Task<Message> {
-    match message {
-        Message::TogglePopup => {
-            if let Some(id) = self.popup.take() {
-                return destroy_popup(id);
-            } else {
-                let new_id = window::Id::unique();
-                self.popup = Some(new_id);
-                let n = self.config.accounts.len();
-                let fetch_task = if n > 0 {
-                    self.loading = true;
-                    self.pending_syncs = n;
-                    self.events.clear();
-                    self.calendars.clear();
-                    spawn_sync_tasks(&self.config.accounts)
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::TogglePopup => return self.toggle_popup(),
+            Message::PopupClosed(id) => {
+                if self.popup == Some(id) {
+                    self.popup = None;
+                }
+            }
+            Message::Tick => {
+                self.now = Local::now();
+            }
+            Message::SyncTick => return self.refresh_if_idle(),
+            Message::CalendarsLoaded(account_id, result) => {
+                return self.handle_calendars_loaded(account_id, result);
+            }
+            Message::EventsLoaded(account_id, label, result) => {
+                self.handle_events_loaded(account_id, label, result);
+            }
+            Message::PrevMonth => {
+                if self.view_month == 1 {
+                    self.view_month = 12;
+                    self.view_year -= 1;
                 } else {
-                    self.loading = false;
-                    Task::none()
-                };
-                let main_id = self.core.main_window_id().unwrap_or(window::Id::unique());
-                let popup_settings = self
-                    .core
-                    .applet
-                    .get_popup_settings(main_id, new_id, None, None, None);
-                return Task::batch(vec![get_popup(popup_settings), fetch_task]);
-            }
-        }
-        Message::PopupClosed(id) => {
-            if self.popup == Some(id) {
-                self.popup = None;
-            }
-        }
-        Message::Tick => {
-            self.now = Local::now();
-        }
-        Message::SyncTick => {
-            if self.popup.is_none() && self.pending_syncs == 0 {
-                let n = self.config.accounts.len();
-                if n > 0 {
-                    self.pending_syncs = n;
-                    self.events.clear();
-                    self.calendars.clear();
-                    return spawn_sync_tasks(&self.config.accounts);
+                    self.view_month -= 1;
                 }
             }
-        }
-        Message::CalendarsLoaded(account_id, Ok(cals)) => {
-            if self
-                .config
-                .accounts
-                .first()
-                .map(|a| a.id == account_id)
-                .unwrap_or(false)
-            {
-                self.calendars = cals.clone();
-            }
-
-            if let Some(cal) = cals.into_iter().next() {
-                if let Some(account) = self
-                    .config
-                    .accounts
-                    .iter()
-                    .find(|a| a.id == account_id)
-                    .cloned()
-                {
-                    let label = account.username.clone();
-                    let account_id = account.id.clone();
-                    let client = CalDavClient::new(
-                        account.url.clone(),
-                        account.username.clone(),
-                        account.password.clone(),
-                    );
-                    let href = cal.href.clone();
-                    return Task::perform(
-                        async move { client.get_events(&href).await },
-                        move |r| cosmic::Action::App(Message::EventsLoaded(account_id, label, r)),
-                    );
+            Message::NextMonth => {
+                if self.view_month == 12 {
+                    self.view_month = 1;
+                    self.view_year += 1;
+                } else {
+                    self.view_month += 1;
                 }
             }
-
-            self.complete_sync_slot();
-        }
-        Message::CalendarsLoaded(account_id, Err(e)) => {
-            eprintln!("CalendarsLoaded error for {}: {}", account_id, e);
-            self.complete_sync_slot();
-        }
-        Message::EventsLoaded(account_id, label, Ok(events)) => {
-            self.events.extend(events.into_iter().map(|event| AppletEvent {
-                account_id: account_id.clone(),
-                label: label.clone(),
-                event,
-            }));
-            self.complete_sync_slot();
-            if self.pending_syncs == 0 {
-                self.events.sort_by_key(|item| item.event.start);
-            }
-        }
-        Message::EventsLoaded(account_id, label, Err(e)) => {
-            eprintln!("EventsLoaded error for {}/{}: {}", account_id, label, e);
-            self.complete_sync_slot();
-        }
-        Message::PrevMonth => {
-            if self.view_month == 1 {
-                self.view_month = 12;
-                self.view_year -= 1;
-            } else {
-                self.view_month -= 1;
-            }
-        }
-        Message::NextMonth => {
-            if self.view_month == 12 {
-                self.view_month = 1;
-                self.view_year += 1;
-            } else {
-                self.view_month += 1;
-            }
-        }
-        Message::SelectDay(d) => {
-            self.date_selected =
-                NaiveDate::from_ymd_opt(self.view_year, self.view_month, d).unwrap_or(self.date_selected);
-            self.show_add_form = false;
-            self.editing_event = None;
-            self.form_error = None;
-        }
-        Message::EditEvent(index) => {
-            if let Some(item) = self.events.get(index).cloned() {
-                self.begin_edit(item);
-            }
-        }
-        Message::ToggleAddForm => {
-            if self.show_add_form && self.editing_event.is_none() {
+            Message::SelectDay(d) => {
+                self.date_selected =
+                    NaiveDate::from_ymd_opt(self.view_year, self.view_month, d).unwrap_or(self.date_selected);
                 self.show_add_form = false;
-                self.form_error = None;
-            } else {
-                self.show_add_form = true;
                 self.editing_event = None;
-                self.reset_form();
-                self.form_start_date = self.date_selected.format("%Y-%m-%d").to_string();
-                self.form_end_date = self.date_selected.format("%Y-%m-%d").to_string();
                 self.form_error = None;
             }
-        }
-        Message::CancelForm => {
-            self.show_add_form = false;
-            self.editing_event = None;
-            self.creating_event = false;
-            self.form_error = None;
-            self.reset_form();
-        }
-        Message::FormTitleChanged(s) => self.form_title = s,
-        Message::FormStartDateChanged(s) => self.form_start_date = s,
-        Message::FormStartTimeChanged(s) => self.form_start_time = s,
-        Message::FormEndDateChanged(s) => self.form_end_date = s,
-        Message::FormEndTimeChanged(s) => self.form_end_time = s,
-        Message::FormLocationChanged(s) => self.form_location = s,
-        Message::FormDescriptionChanged(s) => self.form_description = s,
-        Message::FormReminderChanged(s) => self.form_reminder = s,
-        Message::SubmitEvent => {
-            if self.creating_event {
-                return Task::none();
+            Message::EditEvent(index) => self.begin_edit_at(index),
+            Message::ToggleAddForm => self.toggle_add_form(),
+            Message::CancelForm => self.cancel_form(),
+            Message::FormTitleChanged(s) => self.form_title = s,
+            Message::FormStartDateChanged(s) => self.form_start_date = s,
+            Message::FormStartTimeChanged(s) => self.form_start_time = s,
+            Message::FormEndDateChanged(s) => self.form_end_date = s,
+            Message::FormEndTimeChanged(s) => self.form_end_time = s,
+            Message::FormLocationChanged(s) => self.form_location = s,
+            Message::FormDescriptionChanged(s) => self.form_description = s,
+            Message::FormReminderChanged(s) => self.form_reminder = s,
+            Message::SubmitEvent => return self.submit_event(),
+            Message::DeleteEditingEvent => return self.delete_editing_event(),
+            Message::EventCreated(result) | Message::EventUpdated(result) | Message::EventDeleted(result) => {
+                return self.finish_event_mutation(result);
             }
-            if self.form_title.trim().is_empty() {
-                self.form_error = Some("Title required".into());
-            } else {
-                let start = parse_local_datetime(&self.form_start_date, &self.form_start_time);
-                let end = parse_local_datetime(&self.form_end_date, &self.form_end_time);
-                match (start, end) {
-                    (Err(e), _) | (_, Err(e)) => {
-                        self.form_error = Some(e);
-                    }
-                    (Ok(start), Ok(end)) if end <= start => {
-                        self.form_error = Some("End date/time must be after start date/time".into());
-                    }
-                    (Ok(start), Ok(end)) => {
-                        let summary = self.form_title.clone();
-                        let location = self.form_location.clone();
-                        let description = self.form_description.clone();
-                        let reminder = self.form_reminder.parse::<i32>().unwrap_or(15);
+        }
 
-                        if let Some(edit) = self.editing_event.clone() {
-                            if let Some(account) = self
-                                .config
-                                .accounts
-                                .iter()
-                                .find(|a| a.id == edit.account_id)
-                                .cloned()
-                            {
-                                let client = CalDavClient::new(
-                                    account.url.clone(),
-                                    account.username.clone(),
-                                    account.password.clone(),
-                                );
-                                self.creating_event = true;
-                                self.form_error = None;
-                                return Task::perform(
-                                    async move {
-                                        client
-                                            .update_event(
-                                                &edit.event_href,
-                                                edit.event_etag.as_deref(),
-                                                &edit.uid,
-                                                &summary,
-                                                start,
-                                                end,
-                                                &location,
-                                                &description,
-                                                reminder,
-                                            )
-                                            .await
-                                    },
-                                    |r| cosmic::Action::App(Message::EventUpdated(r)),
-                                );
-                            } else {
-                                self.form_error = Some("Account not found for this event".into());
-                            }
-                        } else if let Some(account) = self.config.accounts.first().cloned() {
-                            if let Some(cal) = self.calendars.first().cloned() {
-                                let client = CalDavClient::new(
-                                    account.url.clone(),
-                                    account.username.clone(),
-                                    account.password.clone(),
-                                );
-                                let href = cal.href.clone();
-                                self.creating_event = true;
-                                self.form_error = None;
-                                return Task::perform(
-                                    async move {
-                                        client
-                                            .create_event(
-                                                &href,
-                                                &summary,
-                                                start,
-                                                end,
-                                                &location,
-                                                &description,
-                                                reminder,
-                                            )
-                                            .await
-                                    },
-                                    |r| cosmic::Action::App(Message::EventCreated(r)),
-                                );
-                            } else {
-                                self.form_error = Some("No calendar found".into());
-                            }
-                        } else {
-                            self.form_error = Some("No account configured".into());
-                        }
-                    }
-                }
-            }
-        }
-        Message::DeleteEditingEvent => {
-            if self.creating_event {
-                return Task::none();
-            }
-            if let Some(edit) = self.editing_event.clone() {
-                if let Some(account) = self
-                    .config
-                    .accounts
-                    .iter()
-                    .find(|a| a.id == edit.account_id)
-                    .cloned()
-                {
-                    let client = CalDavClient::new(
-                        account.url.clone(),
-                        account.username.clone(),
-                        account.password.clone(),
-                    );
-                    self.creating_event = true;
-                    self.form_error = None;
-                    return Task::perform(
-                        async move { client.delete_event(&edit.event_href, edit.event_etag.as_deref()).await },
-                        |r| cosmic::Action::App(Message::EventDeleted(r)),
-                    );
-                } else {
-                    self.form_error = Some("Account not found for this event".into());
-                }
-            }
-        }
-        Message::EventCreated(Ok(())) | Message::EventUpdated(Ok(())) | Message::EventDeleted(Ok(())) => {
-            self.creating_event = false;
-            self.show_add_form = false;
-            self.editing_event = None;
-            self.reset_form();
-
-            let n = self.config.accounts.len();
-            if n > 0 {
-                self.pending_syncs = n;
-                self.events.clear();
-                self.calendars.clear();
-                return spawn_sync_tasks(&self.config.accounts);
-            }
-        }
-        Message::EventCreated(Err(e)) | Message::EventUpdated(Err(e)) | Message::EventDeleted(Err(e)) => {
-            self.creating_event = false;
-            self.form_error = Some(e);
-        }
+        Task::none()
     }
-
-    Task::none()
-}
 
     fn view(&self) -> Element<'_, Message> {
         use std::sync::LazyLock;
@@ -539,6 +299,123 @@ fn spawn_sync_tasks(accounts: &[Account]) -> Task<Message> {
 }
 
 impl CalDavApplet {
+    fn account_by_id(&self, account_id: &str) -> Option<&Account> {
+        self.config.accounts.iter().find(|a| a.id == account_id)
+    }
+
+    fn client_for_account(&self, account: &Account) -> CalDavClient {
+        CalDavClient::new(
+            account.url.clone(),
+            account.username.clone(),
+            account.password.clone(),
+        )
+    }
+
+    fn toggle_popup(&mut self) -> Task<Message> {
+        if let Some(id) = self.popup.take() {
+            return destroy_popup(id);
+        }
+
+        let new_id = window::Id::unique();
+        self.popup = Some(new_id);
+        let fetch_task = self.refresh_accounts();
+        let main_id = self.core.main_window_id().unwrap_or(window::Id::unique());
+        let popup_settings = self
+            .core
+            .applet
+            .get_popup_settings(main_id, new_id, None, None, None);
+        Task::batch(vec![get_popup(popup_settings), fetch_task])
+    }
+
+    fn refresh_if_idle(&mut self) -> Task<Message> {
+        if self.popup.is_none() && self.pending_syncs == 0 {
+            return self.refresh_accounts();
+        }
+        Task::none()
+    }
+
+    fn refresh_accounts(&mut self) -> Task<Message> {
+        let n = self.config.accounts.len();
+        if n == 0 {
+            self.loading = false;
+            self.pending_syncs = 0;
+            self.events.clear();
+            self.calendars.clear();
+            return Task::none();
+        }
+
+        self.loading = true;
+        self.pending_syncs = n;
+        self.events.clear();
+        self.calendars.clear();
+        spawn_sync_tasks(&self.config.accounts)
+    }
+
+    fn handle_calendars_loaded(
+        &mut self,
+        account_id: String,
+        result: Result<Vec<Calendar>, String>,
+    ) -> Task<Message> {
+        match result {
+            Ok(cals) => {
+                if self
+                    .config
+                    .accounts
+                    .first()
+                    .map(|a| a.id == account_id)
+                    .unwrap_or(false)
+                {
+                    self.calendars = cals.clone();
+                }
+
+                if let Some(cal) = cals.into_iter().next() {
+                    if let Some(account) = self.account_by_id(&account_id).cloned() {
+                        let label = account.username.clone();
+                        let account_id = account.id.clone();
+                        let client = self.client_for_account(&account);
+                        let href = cal.href.clone();
+                        return Task::perform(
+                            async move { client.get_events(&href).await },
+                            move |r| cosmic::Action::App(Message::EventsLoaded(account_id, label, r)),
+                        );
+                    }
+                }
+
+                self.complete_sync_slot();
+            }
+            Err(e) => {
+                eprintln!("CalendarsLoaded error for {}: {}", account_id, e);
+                self.complete_sync_slot();
+            }
+        }
+        Task::none()
+    }
+
+    fn handle_events_loaded(
+        &mut self,
+        account_id: String,
+        label: String,
+        result: Result<Vec<CalendarEvent>, String>,
+    ) {
+        match result {
+            Ok(events) => {
+                self.events.extend(events.into_iter().map(|event| AppletEvent {
+                    account_id: account_id.clone(),
+                    label: label.clone(),
+                    event,
+                }));
+                self.complete_sync_slot();
+                if self.pending_syncs == 0 {
+                    self.events.sort_by_key(|item| item.event.start);
+                }
+            }
+            Err(e) => {
+                eprintln!("EventsLoaded error for {}/{}: {}", account_id, label, e);
+                self.complete_sync_slot();
+            }
+        }
+    }
+
     fn reset_form(&mut self) {
         self.form_title = String::new();
         self.form_start_date = self.date_selected.format("%Y-%m-%d").to_string();
@@ -549,6 +426,12 @@ impl CalDavApplet {
         self.form_description = String::new();
         self.form_reminder = String::from("15");
         self.form_error = None;
+    }
+
+    fn begin_edit_at(&mut self, index: usize) {
+        if let Some(item) = self.events.get(index).cloned() {
+            self.begin_edit(item);
+        }
     }
 
     fn begin_edit(&mut self, item: AppletEvent) {
@@ -583,6 +466,152 @@ impl CalDavApplet {
         });
     }
 
+    fn toggle_add_form(&mut self) {
+        if self.show_add_form && self.editing_event.is_none() {
+            self.show_add_form = false;
+            self.form_error = None;
+        } else {
+            self.show_add_form = true;
+            self.editing_event = None;
+            self.reset_form();
+            self.form_error = None;
+        }
+    }
+
+    fn cancel_form(&mut self) {
+        self.show_add_form = false;
+        self.editing_event = None;
+        self.creating_event = false;
+        self.form_error = None;
+        self.reset_form();
+    }
+
+    fn submit_event(&mut self) -> Task<Message> {
+        if self.creating_event {
+            return Task::none();
+        }
+        if self.form_title.trim().is_empty() {
+            self.form_error = Some("Title required".into());
+            return Task::none();
+        }
+
+        let start = parse_local_datetime(&self.form_start_date, &self.form_start_time);
+        let end = parse_local_datetime(&self.form_end_date, &self.form_end_time);
+        let (start, end) = match (start, end) {
+            (Err(e), _) | (_, Err(e)) => {
+                self.form_error = Some(e);
+                return Task::none();
+            }
+            (Ok(start), Ok(end)) if end <= start => {
+                self.form_error = Some("End date/time must be after start date/time".into());
+                return Task::none();
+            }
+            (Ok(start), Ok(end)) => (start, end),
+        };
+
+        let summary = self.form_title.clone();
+        let location = self.form_location.clone();
+        let description = self.form_description.clone();
+        let reminder = self.form_reminder.parse::<i32>().unwrap_or(15);
+
+        if let Some(edit) = self.editing_event.clone() {
+            let Some(account) = self.account_by_id(&edit.account_id).cloned() else {
+                self.form_error = Some("Account not found for this event".into());
+                return Task::none();
+            };
+            let client = self.client_for_account(&account);
+            self.creating_event = true;
+            self.form_error = None;
+            return Task::perform(
+                async move {
+                    client
+                        .update_event(
+                            &edit.event_href,
+                            edit.event_etag.as_deref(),
+                            &edit.uid,
+                            &summary,
+                            start,
+                            end,
+                            &location,
+                            &description,
+                            reminder,
+                        )
+                        .await
+                },
+                |r| cosmic::Action::App(Message::EventUpdated(r)),
+            );
+        }
+
+        let Some(account) = self.config.accounts.first().cloned() else {
+            self.form_error = Some("No account configured".into());
+            return Task::none();
+        };
+        let Some(cal) = self.calendars.first().cloned() else {
+            self.form_error = Some("No calendar found".into());
+            return Task::none();
+        };
+
+        let client = self.client_for_account(&account);
+        let href = cal.href.clone();
+        self.creating_event = true;
+        self.form_error = None;
+        Task::perform(
+            async move {
+                client
+                    .create_event(
+                        &href,
+                        &summary,
+                        start,
+                        end,
+                        &location,
+                        &description,
+                        reminder,
+                    )
+                    .await
+            },
+            |r| cosmic::Action::App(Message::EventCreated(r)),
+        )
+    }
+
+    fn delete_editing_event(&mut self) -> Task<Message> {
+        if self.creating_event {
+            return Task::none();
+        }
+
+        let Some(edit) = self.editing_event.clone() else {
+            return Task::none();
+        };
+        let Some(account) = self.account_by_id(&edit.account_id).cloned() else {
+            self.form_error = Some("Account not found for this event".into());
+            return Task::none();
+        };
+
+        let client = self.client_for_account(&account);
+        self.creating_event = true;
+        self.form_error = None;
+        Task::perform(
+            async move { client.delete_event(&edit.event_href, edit.event_etag.as_deref()).await },
+            |r| cosmic::Action::App(Message::EventDeleted(r)),
+        )
+    }
+
+    fn finish_event_mutation(&mut self, result: Result<(), String>) -> Task<Message> {
+        match result {
+            Ok(()) => {
+                self.creating_event = false;
+                self.show_add_form = false;
+                self.editing_event = None;
+                self.reset_form();
+                self.refresh_accounts()
+            }
+            Err(e) => {
+                self.creating_event = false;
+                self.form_error = Some(e);
+                Task::none()
+            }
+        }
+    }
+
     fn complete_sync_slot(&mut self) {
         self.pending_syncs = self.pending_syncs.saturating_sub(1);
         if self.pending_syncs == 0 {
@@ -590,26 +619,34 @@ impl CalDavApplet {
         }
     }
 
+    fn selected_day_events(&self) -> Vec<(usize, &AppletEvent)> {
+        self.events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                if event_overlaps_date(&item.event, self.date_selected) {
+                    Some((index, item))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     fn calendar_grid(&self, today: NaiveDate) -> widget::Grid<'_, Message> {
         let mut calendar = grid().width(Length::Fill);
 
-        // First day of the month and what weekday it falls on (0=Sun)
         let first_of_month =
             NaiveDate::from_ymd_opt(self.view_year, self.view_month, 1).unwrap_or_default();
         let first_weekday = first_of_month.weekday().num_days_from_sunday();
         let dim = days_in_month(self.view_year, self.view_month);
-
-        // Pre-compute visuals for all days in one pass over events (O(events))
-        // instead of calling day_visual per cell (O(days * events)).
         let visuals = self.month_day_visuals(first_of_month, dim);
 
-        // Day-of-week headers: Sun Mon Tue Wed Thu Fri Sat
         for h in ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] {
             calendar = calendar.push(text::caption(h).apply(container).center_x(Length::Fixed(44.0)));
         }
         calendar = calendar.insert_row();
 
-        // Only render rows needed for this month
         let total_cells = first_weekday + dim;
         let total_rows = (total_cells + 6) / 7;
         let num_cells = total_rows * 7;
@@ -642,63 +679,50 @@ impl CalDavApplet {
         calendar
     }
 
-fn events_list(&self) -> Element<'_, Message> {
-    let day_events: Vec<(usize, &AppletEvent)> = self
-        .events
-        .iter()
-        .enumerate()
-        .filter_map(|(index, item)| {
-            if event_overlaps_date(&item.event, self.date_selected) {
-                Some((index, item))
-            } else {
-                None
+    fn events_list(&self) -> Element<'_, Message> {
+        let day_events = self.selected_day_events();
+        let mut col = widget::column::with_capacity(5).spacing(4).padding([8, 12]);
+
+        if self.loading {
+            col = col.push(text::body("Loading events..."));
+        } else if self.config.accounts.is_empty() {
+            col = col.push(text::body("No accounts configured"));
+        } else if day_events.is_empty() {
+            col = col.push(text::body("No events this day"));
+        } else {
+            let show_account_label = self.config.accounts.len() > 1;
+
+            for (index, item) in day_events {
+                let time_str = format_event_time_range(&item.event);
+                let title = if show_account_label {
+                    format!("{}: {}", item.label, item.event.summary)
+                } else {
+                    item.event.summary.clone()
+                };
+                let title = match item.event.location.as_deref().filter(|s| !s.is_empty()) {
+                    Some(loc) => format!("{} ({})", title, loc),
+                    None => title,
+                };
+
+                let row = cosmic::iced::widget::row![
+                    container(text::body(time_str)).width(Length::Shrink),
+                    container(text::body(title)).width(Length::Fill),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Start);
+
+                col = col.push(
+                    button::custom(row)
+                        .width(Length::Fill)
+                        .class(cosmic::theme::Button::Text)
+                        .on_press(Message::EditEvent(index)),
+                );
             }
-        })
-        .collect();
-
-    let mut col = widget::column::with_capacity(5).spacing(4).padding([8, 12]);
-
-    if self.loading {
-        col = col.push(text::body("Loading events..."));
-    } else if self.config.accounts.is_empty() {
-        col = col.push(text::body("No accounts configured"));
-    } else if day_events.is_empty() {
-        col = col.push(text::body("No events this day"));
-    } else {
-        let show_account_label = self.config.accounts.len() > 1;
-
-        for (index, item) in day_events {
-            let time_str = format_event_time_range(&item.event);
-            let base_title = if show_account_label {
-                format!("{}: {}", item.label, item.event.summary)
-            } else {
-                item.event.summary.clone()
-            };
-            let title_str = match item.event.location.as_deref().filter(|s| !s.is_empty()) {
-                Some(loc) => format!("{} ({})", base_title, loc),
-                None => base_title,
-            };
-
-            let row = cosmic::iced::widget::row![
-                container(text::body(time_str)).width(Length::Shrink),
-                container(text::body(title_str)).width(Length::Fill),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Start);
-
-            col = col.push(
-                button::custom(row)
-                    .width(Length::Fill)
-                    .class(cosmic::theme::Button::Text)
-                    .on_press(Message::EditEvent(index)),
-            );
         }
+
+        col.into()
     }
 
-    col.into()
-}
-
-/// Pre-compute day visuals for the entire month in a single pass over events.
     fn month_day_visuals(&self, first_of_month: NaiveDate, days: u32) -> Vec<DayVisual> {
         let mut visuals = vec![DayVisual::default(); days as usize];
 
@@ -762,102 +786,102 @@ fn events_list(&self) -> Element<'_, Message> {
         visuals
     }
 
-fn add_event_section(&self) -> Element<'_, Message> {
-    if !self.show_add_form {
-        return cosmic::iced::widget::Space::new().into();
-    }
-
-    let date_label = self.date_selected.format("%-d %b %Y").to_string();
-    let editing = self.editing_event.is_some();
-    let title_text = if editing {
-        format!("Edit event — {}", date_label)
-    } else {
-        format!("New event — {}", date_label)
-    };
-
-    let mut col = widget::column::with_capacity(8)
-        .spacing(6)
-        .padding([4, 12, 8, 12]);
-
-    col = col.push(text::body(title_text));
-
-    col = col.push(widget::text_input("Title *", &self.form_title).on_input(Message::FormTitleChanged));
-
-    col = col.push(text::caption("Start (YYYY-MM-DD, HH:MM)"));
-    col = col.push(
-        cosmic::iced::widget::row![
-            widget::text_input("2026-01-15", &self.form_start_date)
-                .on_input(Message::FormStartDateChanged)
-                .width(Length::Fixed(120.0)),
-            widget::text_input("09:00", &self.form_start_time)
-                .on_input(Message::FormStartTimeChanged)
-                .width(Length::Fixed(80.0)),
-        ]
-        .spacing(6)
-        .align_y(cosmic::iced::Alignment::Center),
-    );
-
-    col = col.push(text::caption("End (YYYY-MM-DD, HH:MM)"));
-    col = col.push(
-        cosmic::iced::widget::row![
-            widget::text_input("2026-01-15", &self.form_end_date)
-                .on_input(Message::FormEndDateChanged)
-                .width(Length::Fixed(120.0)),
-            widget::text_input("10:00", &self.form_end_time)
-                .on_input(Message::FormEndTimeChanged)
-                .width(Length::Fixed(80.0)),
-        ]
-        .spacing(6)
-        .align_y(cosmic::iced::Alignment::Center),
-    );
-
-    col = col.push(text::caption("Location"));
-    col = col.push(widget::text_input("Location", &self.form_location).on_input(Message::FormLocationChanged));
-
-    col = col.push(text::caption("Description"));
-    col = col.push(widget::text_input("Notes", &self.form_description).on_input(Message::FormDescriptionChanged));
-
-    col = col.push(text::caption("Reminder (minutes before)"));
-    col = col.push(widget::text_input("15", &self.form_reminder).on_input(Message::FormReminderChanged));
-
-    if let Some(err) = &self.form_error {
-        col = col.push(text::body(err.clone()));
-    }
-
-    let save_label = if self.creating_event { "Saving..." } else { "Save" };
-    let mut save_button = button::custom(text::body(save_label))
-        .padding([6, 24])
-        .class(cosmic::theme::Button::Suggested);
-    if !self.creating_event {
-        save_button = save_button.on_press(Message::SubmitEvent);
-    }
-
-    let mut actions = cosmic::iced::widget::row![
-        button::custom(text::body("Cancel"))
-            .padding([6, 24])
-            .class(cosmic::theme::Button::Text)
-            .on_press(Message::CancelForm),
-        container(text(" ")).width(Length::Fill),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-
-    if editing {
-        let mut delete_button = button::custom(text::body("Delete"))
-            .padding([6, 24])
-            .class(cosmic::theme::Button::Standard);
-        if !self.creating_event {
-            delete_button = delete_button.on_press(Message::DeleteEditingEvent);
+    fn add_event_section(&self) -> Element<'_, Message> {
+        if !self.show_add_form {
+            return cosmic::iced::widget::Space::new().into();
         }
-        actions = actions.push(delete_button);
+
+        let date_label = self.date_selected.format("%-d %b %Y").to_string();
+        let editing = self.editing_event.is_some();
+        let title_text = if editing {
+            format!("Edit event — {}", date_label)
+        } else {
+            format!("New event — {}", date_label)
+        };
+
+        let mut col = widget::column::with_capacity(8)
+            .spacing(6)
+            .padding([4, 12, 8, 12]);
+
+        col = col.push(text::body(title_text));
+
+        col = col.push(widget::text_input("Title *", &self.form_title).on_input(Message::FormTitleChanged));
+
+        col = col.push(text::caption("Start (YYYY-MM-DD, HH:MM)"));
+        col = col.push(
+            cosmic::iced::widget::row![
+                widget::text_input("2026-01-15", &self.form_start_date)
+                    .on_input(Message::FormStartDateChanged)
+                    .width(Length::Fixed(120.0)),
+                widget::text_input("09:00", &self.form_start_time)
+                    .on_input(Message::FormStartTimeChanged)
+                    .width(Length::Fixed(80.0)),
+            ]
+            .spacing(6)
+            .align_y(cosmic::iced::Alignment::Center),
+        );
+
+        col = col.push(text::caption("End (YYYY-MM-DD, HH:MM)"));
+        col = col.push(
+            cosmic::iced::widget::row![
+                widget::text_input("2026-01-15", &self.form_end_date)
+                    .on_input(Message::FormEndDateChanged)
+                    .width(Length::Fixed(120.0)),
+                widget::text_input("10:00", &self.form_end_time)
+                    .on_input(Message::FormEndTimeChanged)
+                    .width(Length::Fixed(80.0)),
+            ]
+            .spacing(6)
+            .align_y(cosmic::iced::Alignment::Center),
+        );
+
+        col = col.push(text::caption("Location"));
+        col = col.push(widget::text_input("Location", &self.form_location).on_input(Message::FormLocationChanged));
+
+        col = col.push(text::caption("Description"));
+        col = col.push(widget::text_input("Notes", &self.form_description).on_input(Message::FormDescriptionChanged));
+
+        col = col.push(text::caption("Reminder (minutes before)"));
+        col = col.push(widget::text_input("15", &self.form_reminder).on_input(Message::FormReminderChanged));
+
+        if let Some(err) = &self.form_error {
+            col = col.push(text::body(err.clone()));
+        }
+
+        let save_label = if self.creating_event { "Saving..." } else { "Save" };
+        let mut save_button = button::custom(text::body(save_label))
+            .padding([6, 24])
+            .class(cosmic::theme::Button::Suggested);
+        if !self.creating_event {
+            save_button = save_button.on_press(Message::SubmitEvent);
+        }
+
+        let mut actions = cosmic::iced::widget::row![
+            button::custom(text::body("Cancel"))
+                .padding([6, 24])
+                .class(cosmic::theme::Button::Text)
+                .on_press(Message::CancelForm),
+            container(text(" ")).width(Length::Fill),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+
+        if editing {
+            let mut delete_button = button::custom(text::body("Delete"))
+                .padding([6, 24])
+                .class(cosmic::theme::Button::Standard);
+            if !self.creating_event {
+                delete_button = delete_button.on_press(Message::DeleteEditingEvent);
+            }
+            actions = actions.push(delete_button);
+        }
+
+        actions = actions.push(save_button);
+
+        col = col.push(actions);
+
+        col.into()
     }
-
-    actions = actions.push(save_button);
-
-    col = col.push(actions);
-
-    col.into()
-}
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
